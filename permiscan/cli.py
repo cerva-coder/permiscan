@@ -176,8 +176,7 @@ def _emit_recon(result: ReconResult, args) -> int:
         output = json.dumps({
             "target": result.target,
             "stacks": [{"name": s.name, "confidence": s.confidence, "evidence": s.evidence} for s in result.stacks],
-            "firebase_config": {k: v for k, v in result.firebase_config.items() if k != "apiKey"}
-            | ({"apiKey": "***"} if result.firebase_config.get("apiKey") else {}),
+            "firebase_config": dict(result.firebase_config),  # config web do Firebase é público por design (apiKey inclusa)
             "supabase_instances": [{"url": i.url, "keys": [k["role"] for k in i.keys]} for i in result.supabase_instances],
             "endpoints": [{"path": e.path, "status": e.status, "content_type": e.content_type} for e in result.endpoints],
             "summary": dict(Counter(f.severity.value for f in result.findings)),
@@ -194,7 +193,7 @@ def _emit_recon(result: ReconResult, args) -> int:
         rows.append(("stack", stacks))
         if result.firebase_config:
             rows.append(("firebase", ", ".join(
-                f"{k}={'***' if k == 'apiKey' else v}" for k, v in result.firebase_config.items())))
+                f"{k}={v}" for k, v in result.firebase_config.items())))
         for inst in result.supabase_instances:
             rows.append(("supabase", f"{inst.url}  (chaves: {', '.join(k['role'] for k in inst.keys) or 'nenhuma'})"))
         extra = [report.kv_table(rows)]
