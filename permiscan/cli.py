@@ -15,6 +15,20 @@ from permiscan.adapters.supabase_api import (
     detect_instances,
     fetch_text,
 )
+from permiscan.audit import (
+    load_instances_from_batch_json,
+    load_instances_from_file,
+    print_audit_report,
+    save_audit_json,
+    audit_supabase_instances,
+)
+from permiscan.batch import (
+    load_urls_from_file,
+    print_text_report,
+    save_csv,
+    save_json,
+    scan_batch,
+)
 from permiscan.discovery import Recon, ReconResult
 from permiscan.findings import Finding, Severity
 from permiscan.scope import ScopeError, authorize, load_scope, parse_dsn
@@ -79,6 +93,34 @@ def _parser() -> argparse.ArgumentParser:
     rec = sub.add_parser("recon", parents=[report, probe],
                          help="dado só uma URL, identifica a stack e roda as análises cabíveis")
     rec.add_argument("url", help="URL do alvo, ex.: https://app.exemplo.com")
+
+    # Processamento em massa de sites.
+    batch = sub.add_parser("batch", parents=[report, probe],
+                           help="processa uma lista de sites em massa")
+    src = batch.add_mutually_exclusive_group(required=True)
+    src.add_argument("--file", type=Path, help="arquivo com URLs (uma por linha)")
+    src.add_argument("--urls", nargs="+", help="lista de URLs como argumentos")
+    batch.add_argument("--workers", type=int, default=10, 
+                       help="número de workers paralelos (padrão: %(default)s)")
+    batch.add_argument("--output-json", type=Path, help="salva resultados em JSON")
+    batch.add_argument("--output-csv", type=Path, help="salva resumo em CSV")
+
+    # Auditoria automática de instâncias Supabase.
+    audit = sub.add_parser("audit", parents=[report],
+                           help="auditoria automática de instâncias Supabase (extrai chaves e testa RLS)")
+    src_audit = audit.add_mutually_exclusive_group(required=True)
+    src_audit.add_argument("--from-batch", type=Path, 
+                          help="JSON do comando batch para extrair instâncias automaticamente")
+    src_audit.add_argument("--file", type=Path, 
+                          help="arquivo com URLs Supabase (uma por linha)")
+    src_audit.add_argument("--urls", nargs="+", help="lista de URLs Supabase como argumentos")
+    audit.add_argument("--workers", type=int, default=10,
+                       help="número de workers paralelos (padrão: %(default)s)")
+    audit.add_argument("--no-writes", action="store_true",
+                       help="não testar escrita (apenas leitura)")
+    audit.add_argument("--no-rpc", action="store_true",
+                       help="não testar funções RPC")
+    audit.add_argument("--output-json", type=Path, help="salva resultados em JSON")
 
     # Firebase Security Rules (arquivo local).
     rules = sub.add_parser("scan-rules", parents=[report],
@@ -200,7 +242,19 @@ def _probe_warnings(opt: ApiScanOptions) -> None:
 
 
 def _detect(args) -> tuple[dict, list[Finding]]:
-    text = fetch_text(args.url) if args.url else _read_file(args.file)
+    if args.url:
+        # Similar ao recon: baixa HTML + scripts JS para encontrar chaves
+        text = fetch_text(args.url)
+        # Extrai scripts JS para buscar chaves (igual ao recon)
+        from permiscan.discovery import script_srcs
+        for src in script_srcs(text, args.url):
+            try:
+                text += "\n" + fetch_text(src)
+            except AdapterError:
+                continue
+    else:
+        text = _read_file(args.file)
+    
     source = args.url or str(args.file)
     instances = detect_instances(text)
     if not instances:
@@ -258,6 +312,87 @@ def dispatch(args) -> int:
             opt = _options(args)
             _probe_warnings(opt)
             return _emit_recon(Recon(args.url, opt).run(), args)
+        elif args.command == "batch":
+            opt = _options(args)
+            _probe_warnings(opt)
+            
+            # Carrega URLs
+            if args.file:
+                urls = load_urls_from_file(args.file)
+                print(f"Carregadas {len(urls)} URLs de {args.file}", file=sys.stderr)
+            else:
+                urls = args.urls
+            
+            if not urls:
+                raise AdapterError("nenhuma URL fornecida")
+            
+            # Callback de progresso
+            def progress(completed, total, result):
+                status = "[OK]" if result.success else "[X]"
+                print(f"[{completed}/{total}] {status} {result.url} ({result.scan_time:.2f}s)", file=sys.stderr)
+            
+            print(f"Iniciando scan de {len(urls)} sites com {args.workers} workers...", file=sys.stderr)
+            results, summary = scan_batch(urls, opt, args.workers, progress)
+            
+            # Salva arquivos se solicitado
+            if args.output_json:
+                save_json(results, summary, args.output_json)
+                print(f"JSON salvo em {args.output_json}", file=sys.stderr)
+            if args.output_csv:
+                save_csv(results, summary, args.output_csv)
+                print(f"CSV salvo em {args.output_csv}", file=sys.stderr)
+            
+            # Imprime relatório
+            print_text_report(results, summary)
+            
+            # Sai com erro se houver findings críticos
+            if summary.critical_findings > 0:
+                return EXIT_FAIL_ON
+            return 0
+        elif args.command == "audit":
+            # Configura opções automáticas
+            opt = ApiScanOptions(
+                rows=1,
+                probe_writes=not args.no_writes,
+                probe_rpc=not args.no_rpc,
+                include_destructive=False,  # Nunca chama destrutivos automaticamente
+            )
+            
+            # Carrega instâncias
+            if args.from_batch:
+                instances = load_instances_from_batch_json(args.from_batch)
+                print(f"Carregadas {len(instances)} instancias do batch JSON", file=sys.stderr)
+            elif args.file:
+                instances = load_instances_from_file(args.file)
+                print(f"Carregadas {len(instances)} URLs de {args.file}", file=sys.stderr)
+            else:
+                instances = [(url, None) for url in args.urls]
+            
+            if not instances:
+                raise AdapterError("nenhuma instancia fornecida")
+            
+            # Callback de progresso
+            def progress(completed, total, result):
+                status = "[OK]" if result.success else "[X]"
+                key_status = "[KEY]" if result.key_found else "[NOKEY]"
+                print(f"[{completed}/{total}] {status} {key_status} {result.supabase_url} ({result.scan_time:.2f}s)", file=sys.stderr)
+            
+            print(f"Iniciando auditoria de {len(instances)} instancias com {args.workers} workers...", file=sys.stderr)
+            print(f"Modo: probe_writes={opt.probe_writes}, probe_rpc={opt.probe_rpc}", file=sys.stderr)
+            results, summary = audit_supabase_instances(instances, opt, args.workers, progress)
+            
+            # Salva JSON se solicitado
+            if args.output_json:
+                save_audit_json(results, summary, args.output_json)
+                print(f"JSON salvo em {args.output_json}", file=sys.stderr)
+            
+            # Imprime relatório
+            print_audit_report(results, summary)
+            
+            # Sai com erro se houver findings críticos
+            if summary.critical_findings > 0:
+                return EXIT_FAIL_ON
+            return 0
         elif args.command == "detect":
             started = datetime.now(UTC)
             info, findings = _detect(args)

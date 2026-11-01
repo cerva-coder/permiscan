@@ -93,7 +93,8 @@ def detect_stacks(text: str, headers: dict | None = None) -> list[StackSignal]:
         sig("firebase", "medium", *fb_ev)
 
     # Supabase
-    if detect_instances(text):
+    sb_instances = detect_instances(text)
+    if sb_instances:
         sig("supabase", "high", "URL do projeto + chave no código")
     elif any(p in text for p in ("supabase.co", "supabase-js", "createClient(")):
         sig("supabase", "medium", "SDK/URL do Supabase no código")
@@ -190,7 +191,8 @@ class Recon:
 
         result.stacks = detect_stacks(text, headers)
         result.firebase_config = extract_firebase_config(text)
-        result.supabase_instances = detect_instances(text)
+        sb_instances = detect_instances(text)
+        result.supabase_instances = sb_instances
         result.endpoints = self._discover_endpoints(html)
         result.findings = self._route(result, text)
         result.recommendations = self._recommend(result)
@@ -219,7 +221,39 @@ class Recon:
 
         for inst in result.supabase_instances:
             if inst.anon_key:
-                findings += self._scan_supabase(inst)
+                try:
+                    findings += self._scan_supabase(inst)
+                except AdapterError as e:
+                    # Se a URL do Supabase for inválida ou a chave não funcionar, não falhar totalmente
+                    if "getaddrinfo failed" in str(e) or "name resolution" in str(e).lower():
+                        findings.append(Finding(
+                            rule_id="supabase-invalid-url",
+                            title=f"URL Supabase inválida detectada no código",
+                            description=f"A URL {inst.url} foi detectada no código mas não existe no DNS. Isso indica uma URL de Supabase antiga ou incorreta que foi deixada no código fonte.",
+                            category=Category.STORAGE, provider="supabase-api", resource=inst.url,
+                            severity=Severity.MEDIUM, confidence=Confidence.CONFIRMED,
+                            remediation=Remediation(summary="Remova a URL antiga do código fonte ou atualize para a URL correta do projeto Supabase.")
+                        ))
+                    elif "401" in str(e):
+                        # Chave rejeitada - provavelmente a chave não corresponde à URL
+                        key_info = f" (ref={inst.keys[0].get('ref')})" if inst.keys and inst.keys[0].get('ref') else ""
+                        findings.append(Finding(
+                            rule_id="supabase-key-url-mismatch",
+                            title=f"Chave Supabase não corresponde à URL detectada",
+                            description=f"A chave detectada{key_info} foi rejeitada pela URL {inst.url}. Isso pode indicar que a chave é de um projeto diferente da URL, ou que a chave expirou/foi revogada. Para escanear com credenciais corretas, use: permiscan scan-api --url <CORRECT_URL> --key <CORRECT_KEY>",
+                            category=Category.AUTHENTICATION, provider="supabase-api", resource=inst.url,
+                            severity=Severity.LOW, confidence=Confidence.POSSIBLE,
+                            remediation=Remediation(summary="Verifique se a chave e a URL correspondem ao mesmo projeto Supabase. Obtenha a chave correta via Supabase Dashboard > Settings > API > anon/public key.")
+                        ))
+                    else:
+                        findings.append(Finding(
+                            rule_id="supabase-scan-error",
+                            title=f"Erro ao escanear instância Supabase",
+                            description=f"Tentativa de escanear {inst.url} falhou: {str(e)}",
+                            category=Category.AUTHORIZATION, provider="supabase-api", resource=inst.url,
+                            severity=Severity.INFO, confidence=Confidence.POSSIBLE,
+                            remediation=Remediation(summary="Verifique se a URL e a chave estão corretas.")
+                        ))
 
         db_url = result.firebase_config.get("databaseURL")
         if db_url:

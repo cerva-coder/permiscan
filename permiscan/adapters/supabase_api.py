@@ -101,11 +101,18 @@ def detect_instances(text: str) -> list[DetectedInstance]:
     emparelhando por project ref quando o JWT o informa."""
     urls = {u.rstrip("/").lower() for u in _SB_CLOUD_URL.findall(text)}
     urls |= {m.rstrip("/").lower() for m in _SB_URL_ASSIGN.findall(text)}
+    
+    # Filtra URLs óbvias de código morto ou placeholders
+    invalid_refs = {"undefined", "null", "your-project", "example", "placeholder", "test"}
+    urls = {u for u in urls if not any(ref in u for ref in invalid_refs)}
 
     keys = []
     for token in set(_JWT.findall(text)):
         claims = jwt_claims(token)
-        if claims.get("iss") == "supabase" or claims.get("role") in ("anon", "service_role"):
+        # Tolerância maior: aceita JWTs com estrutura Supabase típica mesmo sem iss explícito
+        if (claims.get("iss") == "supabase" or 
+            claims.get("role") in ("anon", "service_role", "authenticated") or
+            (claims.get("aud") and claims.get("ref"))):
             keys.append(_describe_key(token))
     keys += [_describe_key(k) for k in set(_SB_KEY.findall(text))]
 
@@ -117,9 +124,16 @@ def detect_instances(text: str) -> list[DetectedInstance]:
             instances[matched[0]].keys.append(k)
         else:
             unpaired.append(k)
-    # Chaves sem ref casável (sb_* ou self-hosted): se só há uma URL, associa a ela.
+    # Chaves sem ref casável: associa à primeira URL se houver apenas uma
     if unpaired and len(instances) == 1:
         next(iter(instances.values())).keys.extend(unpaired)
+    # Se múltiplas URLs e chaves sem ref, não distribui (evita falsos positivos)
+    # Só distribui se a chave for do tipo sb_* (sem ref no JWT)
+    elif unpaired and len(instances) > 1:
+        sb_keys = [k for k in unpaired if k["key"].startswith("sb_")]
+        for k in sb_keys:
+            for inst in instances.values():
+                inst.keys.append(k)
     return list(instances.values())
 
 
@@ -127,7 +141,8 @@ def fetch_text(url: str) -> str:
     if not url.startswith(("http://", "https://")):
         raise AdapterError("a URL deve começar com http:// ou https://")
     try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT) as resp:  # noqa: S310 (esquema validado)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310 (esquema validado)
             return resp.read(5_000_000).decode("utf-8", errors="replace")
     except (urllib.error.URLError, urllib.error.HTTPError) as e:
         raise AdapterError(f"falha ao buscar {url}: {getattr(e, 'reason', e)}") from None
