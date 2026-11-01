@@ -1,0 +1,18 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: docker compose up -d --wait lab-db
+      - run: uv sync --locked
+      - run: uv run pytest -q -rs
+        env:
+          PERMISCAN_LAB_DSN: postgresql://permiscan_auditor:auditor-lab-only@127.0.0.1:55432/permiscan_lab
