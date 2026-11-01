@@ -1,0 +1,17 @@
+services:
+  # Banco intencionalmente vulnerável para desenvolvimento e testes de integração.
+  # Escuta apenas em localhost; nunca exponha este serviço.
+  lab-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: permiscan_lab
+      POSTGRES_USER: lab_admin
+      POSTGRES_PASSWORD: lab-admin-only
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - ./tests/fixtures/lab:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U lab_admin -d permiscan_lab"]
+      interval: 2s
+      retries: 30
