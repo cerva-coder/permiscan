@@ -14,7 +14,13 @@ CLI ──► scope.parse_dsn ──► scope.authorize ──► Adapter.check 
                                                        list[Finding] ──► texto / JSON
 ```
 
-Nenhuma conexão é aberta antes de o alvo passar pela validação de escopo.
+O alvo é sempre explícito no comando. A allowlist (`--scope`) é opcional e, quando passada,
+roda entre `parse_dsn` e `check`. Há dois outros pontos de entrada, com o mesmo formato de
+finding e a mesma saída:
+
+- `scan-api` → `SupabaseApiScanner` (URL + chave anon): lê o OpenAPI do PostgREST, descobre
+  tabelas/RPCs e observa, como anônimo, o que cada tabela retorna. Somente leitura.
+- `scan-rules` → `FirebaseAdapter` (arquivo local): análise textual das Security Rules.
 
 ## Componentes
 
@@ -27,7 +33,10 @@ Nenhuma conexão é aberta antes de o alvo passar pela validação de escopo.
 | `permiscan/adapters/postgres/rules.py` | Regras estáticas sobre o `Snapshot`. |
 | `permiscan/adapters/postgres/__init__.py` | `PostgresAdapter`: sessão somente leitura, `check`, `scan`. |
 | `permiscan/adapters/supabase.py` | `SupabaseAdapter`: PostgreSQL com os papéis e schemas da Data API. |
-| `permiscan/cli.py` | Interface de linha de comando. |
+| `permiscan/adapters/supabase_api.py` | `SupabaseApiScanner`: varredura externa (caixa-preta) pela Data API com URL + chave anon. |
+| `permiscan/adapters/firebase.py` | `FirebaseAdapter`: análise estática de Security Rules (Firestore/Storage/RTDB). |
+| `permiscan/sensitivity.py` | Classificação de sensibilidade pelo nome da coluna/campo. |
+| `permiscan/cli.py` | Interface de linha de comando (`check`, `scan`, `scan-api`, `scan-rules`). |
 | `tests/fixtures/lab` | Laboratório: papéis do Supabase, cenários vulneráveis e seguros. |
 
 ## Decisões
@@ -109,4 +118,11 @@ Capacidades atuais: `metadata`, `rls_analysis`, `privilege_analysis`, `function_
 - Atributos `BYPASSRLS`/`SUPERUSER` só são verificados nos papéis auditados, não em papéis
   que eles possam assumir com `SET ROLE`.
 - Supabase Storage, Auth e a configuração real de schemas expostos ainda não são analisados (M4).
-- Nada é validado dinamicamente ainda (M5).
+- A varredura pela Data API (`scan-api`) é a única fonte dinâmica hoje; a validação dinâmica
+  do banco por conexão direta, com identidades sintéticas, ainda não existe (M5).
+- `scan-api` conclui "legível por anônimo" a partir do comportamento observado, mas não
+  distingue dado público intencional de exposição indevida: por isso a descrição pede
+  confirmação da intenção, e a severidade vem da sensibilidade dos nomes das colunas.
+- A análise de Firebase Rules é textual: cobre `if true`, `".read"/".write": true` e escrita
+  com apenas `request.auth != null`. Não interpreta funções auxiliares (`function …`), `get()`
+  nem a hierarquia de `match`; validação de comportamento fica para o Emulator (M6).
