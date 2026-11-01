@@ -20,6 +20,11 @@ dist/
 node_modules/
 .next/
 
-# Saídas de varredura
+# Saídas de varredura (relatórios e listas de alvos nunca vão para o git)
 reports/out/
 *.findings.json
+*results.json
+*results.csv
+audit_results.json
+mini_batch.json
+*_urls.txt
