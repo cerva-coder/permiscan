@@ -1,0 +1,25 @@
+# Planejamento pessoal — fica fora do repositório
+plano.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Segredos e configuração local
+.env
+.env.*
+!.env.example
+
+# Node (dashboard, marcos futuros)
+node_modules/
+.next/
+
+# Saídas de varredura
+reports/out/
+*.findings.json
