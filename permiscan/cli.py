@@ -15,6 +15,7 @@ from permiscan.adapters.supabase_api import (
     detect_instances,
     fetch_text,
 )
+from permiscan.discovery import Recon, ReconResult
 from permiscan.findings import Finding, Severity
 from permiscan.scope import ScopeError, authorize, load_scope, parse_dsn
 
@@ -73,6 +74,11 @@ def _parser() -> argparse.ArgumentParser:
     src.add_argument("--url", help="busca uma página e procura credenciais nela")
     src.add_argument("--file", type=Path, help="procura credenciais em um arquivo local (HTML, JS, .env)")
     det.add_argument("--scan", action="store_true", help="varre cada instância detectada pela Data API")
+
+    # Reconhecimento automático: identifica a stack, descobre endpoints e roteia.
+    rec = sub.add_parser("recon", parents=[report, probe],
+                         help="dado só uma URL, identifica a stack e roda as análises cabíveis")
+    rec.add_argument("url", help="URL do alvo, ex.: https://app.exemplo.com")
 
     # Firebase Security Rules (arquivo local).
     rules = sub.add_parser("scan-rules", parents=[report],
@@ -134,6 +140,46 @@ def _emit(info: dict, findings: list[Finding], started: datetime, finished: date
         print(output)
 
     if args.fail_on and any(f.severity.rank <= Severity(args.fail_on).rank for f in findings):
+        return EXIT_FAIL_ON
+    return 0
+
+
+def _emit_recon(result: ReconResult, args) -> int:
+    if args.format == "json":
+        output = json.dumps({
+            "target": result.target,
+            "stacks": [{"name": s.name, "confidence": s.confidence, "evidence": s.evidence} for s in result.stacks],
+            "firebase_config": {k: v for k, v in result.firebase_config.items() if k != "apiKey"}
+            | ({"apiKey": "***"} if result.firebase_config.get("apiKey") else {}),
+            "supabase_instances": [{"url": i.url, "keys": [k["role"] for k in i.keys]} for i in result.supabase_instances],
+            "endpoints": [{"path": e.path, "status": e.status, "content_type": e.content_type} for e in result.endpoints],
+            "summary": dict(Counter(f.severity.value for f in result.findings)),
+            "findings": [f.model_dump(mode="json") for f in result.findings],
+            "recommendations": result.recommendations,
+        }, indent=2, ensure_ascii=False)
+    else:
+        lines = [f"PermiScan recon · {result.target}", ""]
+        lines.append("Stack: " + (", ".join(f"{s.name} ({s.confidence})" for s in result.stacks) or "não identificada"))
+        if result.firebase_config:
+            cfg = ", ".join(f"{k}={'***' if k == 'apiKey' else v}" for k, v in result.firebase_config.items())
+            lines.append(f"Firebase: {cfg}")
+        for inst in result.supabase_instances:
+            lines.append(f"Supabase: {inst.url} (chaves: {', '.join(k['role'] for k in inst.keys) or 'nenhuma'})")
+        if result.endpoints:
+            lines.append("Endpoints:")
+            lines += [f"  [{e.status}] {e.path}" + (f"  {e.content_type}" if e.content_type else "") for e in result.endpoints]
+        lines.append("")
+        lines.append(_text_report({"provider": "recon", "target": result.target}, result.findings))
+        if result.recommendations:
+            lines.append("Recomendações:")
+            lines += [f"  - {r}" for r in result.recommendations]
+        output = "\n".join(lines)
+
+    if args.output:
+        args.output.write_text(output, encoding="utf-8")
+    else:
+        print(output)
+    if args.fail_on and any(f.severity.rank <= Severity(args.fail_on).rank for f in result.findings):
         return EXIT_FAIL_ON
     return 0
 
@@ -209,6 +255,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "check":
                 print(json.dumps(info, indent=2, ensure_ascii=False))
                 return 0
+        elif args.command == "recon":
+            opt = _options(args)
+            _probe_warnings(opt)
+            return _emit_recon(Recon(args.url, opt).run(), args)
         elif args.command == "detect":
             started = datetime.now(UTC)
             info, findings = _detect(args)

@@ -62,6 +62,21 @@ Implementado o fluxo caixa-preta da extensão de referência, apontado a alvos e
 Pendente: validar contra um projeto Supabase real; schemas além de `public`; paginação de
 contagem exata; parear chave a projeto por mais do que o `ref` do JWT.
 
+## M0.2 — Reconhecimento automático (`recon`) ✅
+
+- [x] `recon <url>`: busca a página e os bundles JS same-origin.
+- [x] Identificação de stack com confiança (Supabase, Firebase, Next.js, AWS, GCP, server).
+- [x] Extração de config (firebaseConfig, URL/chave Supabase, AWS Access Key).
+- [x] Descoberta de endpoints: caminhos do HTML/JS + sondagem GET de rotas comuns, com
+      baseline anti-catch-all de SPA; findings para `.env`/`.git/config` expostos.
+- [x] Roteamento automático: Supabase → `SupabaseApiScanner`; Firebase RTDB → leitura `/.json`.
+- [x] Relatório unificado (stack, endpoints, config, findings, recomendações).
+- [x] Testes de orquestração com HTTP injetado + verificação ponta a ponta contra servidor local.
+
+Deliberadamente fora: enumeração de subdomínios por DNS (fora da prioridade; é recon de
+terceiros). Firestore/Storage dinâmico pede nomes de coleção/bucket — fica para M4/M6. As
+Security Rules do Firebase não são baixáveis remotamente: o `recon` recomenda `scan-rules`.
+
 ## M4 — Supabase além do catálogo
 
 - Storage: buckets públicos e policies de `storage.objects`.

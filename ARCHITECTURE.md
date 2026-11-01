@@ -24,6 +24,10 @@ finding e a mesma saída:
 - `detect` → `detect_instances` sobre uma página (`--url`) ou arquivo (`--file`): extrai URL e
   chaves Supabase; com `--scan`, roda o `SupabaseApiScanner` em cada instância encontrada.
 - `scan-rules` → `FirebaseAdapter` (arquivo local): análise textual das Security Rules.
+- `recon` → `Recon` (`discovery.py`): busca a página e seus bundles, identifica a stack,
+  descobre endpoints/credenciais e roteia para os adaptadores (Supabase, RTDB), produzindo um
+  relatório unificado. O acesso HTTP fica em `Recon._get`, isolado para teste sem rede. A
+  detecção de stack (`detect_stacks`, `extract_firebase_config`, `extract_paths`) é pura.
 
 ## Componentes
 
@@ -38,8 +42,9 @@ finding e a mesma saída:
 | `permiscan/adapters/supabase.py` | `SupabaseAdapter`: PostgreSQL com os papéis e schemas da Data API. |
 | `permiscan/adapters/supabase_api.py` | `SupabaseApiScanner`: varredura externa (caixa-preta) pela Data API com URL + chave anon. |
 | `permiscan/adapters/firebase.py` | `FirebaseAdapter`: análise estática de Security Rules (Firestore/Storage/RTDB). |
+| `permiscan/discovery.py` | `recon`: identificação de stack, descoberta de endpoints e roteamento automático para os adaptadores. |
 | `permiscan/sensitivity.py` | Classificação de sensibilidade pelo nome da coluna/campo. |
-| `permiscan/cli.py` | Interface de linha de comando (`check`, `scan`, `scan-api`, `scan-rules`). |
+| `permiscan/cli.py` | Interface de linha de comando (`check`, `scan`, `scan-api`, `scan-rules`, `detect`, `recon`). |
 | `tests/fixtures/lab` | Laboratório: papéis do Supabase, cenários vulneráveis e seguros. |
 
 ## Decisões

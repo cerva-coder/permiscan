@@ -38,6 +38,22 @@ uv sync
 
 ## Uso
 
+### Reconhecimento automático (só com a URL)
+
+Identifica a stack, descobre endpoints e credenciais expostas e roteia para as análises
+cabíveis — sem você dizer o provedor:
+
+```sh
+uv run permiscan recon https://app.exemplo.com
+uv run permiscan recon https://app.exemplo.com --probe-writes --probe-rpc   # Supabase: testes ativos
+uv run permiscan recon https://app.exemplo.com --format json
+```
+
+O relatório unificado traz: stack identificada (com confiança), endpoints descobertos,
+configurações/chaves expostas, findings dos adaptadores (RLS, policies, RTDB…) e
+recomendações. O que exige credencial adicional (DSN do banco, arquivo de regras do Firebase)
+é apontado nas recomendações, não assumido.
+
 ### Análise do banco (Supabase/PostgreSQL via conexão direta)
 
 O DSN vai por variável de ambiente (credenciais nunca são aceitas como argumento). Prefira
@@ -148,6 +164,8 @@ lê apenas o catálogo do sistema; nenhuma linha das suas tabelas é consultada.
 | `supabase-api-anon-rpc` | Função RPC que responde sem autenticação (`--probe-rpc`) | pelo nome da função |
 | `supabase-api-rpc-exposed` | RPC de nome destrutivo exposta, não chamada sem `--include-destructive` | info |
 | `supabase-service-role-key` | Chave `service_role` (ignora RLS) usada no cliente | critical |
+| `exposed-aws-access-key` | AWS Access Key ID (`AKIA…`) embarcada no frontend | critical |
+| `exposed-sensitive-file` | Arquivo sensível (`.env`, `.git/config`) servido publicamente | critical |
 | `firebase-rule-public` | Regra `allow …: if true` (Firestore/Storage) | high (leitura) / critical (escrita) |
 | `firebase-rule-any-authenticated-write` | Escrita exigindo só `request.auth != null`, sem propriedade | medium |
 | `firebase-rtdb-public-read` / `-write` | Realtime Database com `".read"`/`".write": true` | high / critical |
