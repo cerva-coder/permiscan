@@ -51,6 +51,21 @@ def survey_many(urls: list[str], level: int = 1, workers: int = 8, progress=None
     return records
 
 
+SCANS_DIR = Path(__file__).resolve().parent.parent / "scans"
+
+
+def list_scans() -> list[Path]:
+    """Scans salvos (001.json, 002.json, …) em ordem numérica."""
+    SCANS_DIR.mkdir(exist_ok=True)
+    return sorted(SCANS_DIR.glob("[0-9]*.json"))
+
+
+def next_scan_path() -> Path:
+    """Próximo nome numérico livre em scans/ (001.json, 002.json, …)."""
+    nums = [int(p.stem) for p in list_scans() if p.stem.isdigit()]
+    return SCANS_DIR / f"{(max(nums) + 1) if nums else 1:03d}.json"
+
+
 def save_survey(records: list[dict], path: Path) -> None:
     path.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
 

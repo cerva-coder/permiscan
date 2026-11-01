@@ -8,7 +8,9 @@ from argparse import Namespace
 from pathlib import Path
 
 from permiscan.discovery import SCAN_LEVELS, Recon
-from permiscan.survey import has_resources, load_survey, load_urls, save_survey, survey_many
+from permiscan.survey import (
+    has_resources, list_scans, load_survey, load_urls, next_scan_path, save_survey, survey_many,
+)
 
 
 def _ask(prompt: str, default: str = "") -> str:
@@ -112,18 +114,29 @@ def _run_mass() -> None:
     interesting = [r["url"] for r in records if has_resources(r)]
     print(f"\n{len(interesting)} de {len(records)} com recursos (Firebase/Supabase ou findings).")
 
-    out = _ask("Salvar triagem em arquivo (vazio = não salvar)")
-    if out:
-        save_survey(records, Path(out))
-        print(f"Salvo em {out}. Explore depois com a opção 3.")
+    path = next_scan_path()
+    save_survey(records, path)
+    print(f"Salvo em {path}. Explore depois com a opção 3.")
 
 
 def _run_explore() -> None:
-    path = _ask("Arquivo da triagem salva (JSON)")
-    if not path:
+    scans = list_scans()
+    if not scans:
+        print("Nenhum scan salvo ainda. Rode a opção 2 (scan em massa) primeiro.")
+        return
+    print("Scans salvos:")
+    for i, p in enumerate(scans, 1):
+        try:
+            recs = load_survey(p)
+            print(f"  {i}) {p.name}  —  {len(recs)} site(s), {sum(map(has_resources, recs))} com recursos")
+        except (OSError, ValueError):
+            print(f"  {i}) {p.name}  —  [ilegível]")
+    pick = _ask("Qual scan explorar (número)", "1")
+    if not (pick.isdigit() and 1 <= int(pick) <= len(scans)):
+        print("Opção inválida.")
         return
     try:
-        records = load_survey(Path(path))
+        records = load_survey(scans[int(pick) - 1])
     except (OSError, ValueError) as e:
         print(f"erro: {e}")
         return

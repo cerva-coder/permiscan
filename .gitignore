@@ -22,6 +22,7 @@ node_modules/
 
 # Saídas de varredura (relatórios e listas de alvos nunca vão para o git)
 reports/out/
+scans/
 *.findings.json
 *results.json
 *results.csv
