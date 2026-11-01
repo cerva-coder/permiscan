@@ -60,6 +60,9 @@ class Finding(BaseModel):
     owasp: str | None = None
     evidence: dict[str, Any] = {}
     remediation: Remediation
+    # Comando reproduzível (curl/psql/…) que demonstra o problema; vazio quando não há um
+    # passo único e seguro de reprodução.
+    poc: str | None = None
     status: str = "open"
 
     @computed_field

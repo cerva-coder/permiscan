@@ -264,7 +264,7 @@ class Recon:
 
         for ep in result.endpoints:
             if ep.path in _SENSITIVE_ROUTES and ep.status == 200 and "html" not in ep.content_type.lower():
-                findings.append(_exposed_file_finding(ep))
+                findings.append(_exposed_file_finding(self.url, ep))
 
         return findings
 
@@ -285,6 +285,7 @@ class Recon:
                 category=Category.AUTHORIZATION, provider="firebase", resource=db_url,
                 severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
                 evidence={"observed_as": "anon", "top_level_keys": keys},
+                poc=f"curl '{db_url.rstrip('/')}/.json?shallow=true'",
                 remediation=Remediation(
                     summary='Exija autenticação em ".read"/".write" e vincule o acesso ao dono (auth.uid).',
                     references=["https://firebase.google.com/docs/database/security"]),
@@ -319,7 +320,7 @@ def _aws_key_finding(key: str) -> Finding:
     )
 
 
-def _exposed_file_finding(ep: Endpoint) -> Finding:
+def _exposed_file_finding(base_url: str, ep: Endpoint) -> Finding:
     return Finding(
         rule_id="exposed-sensitive-file",
         title=f"Arquivo sensível acessível publicamente ({ep.path})",
@@ -328,5 +329,6 @@ def _exposed_file_finding(ep: Endpoint) -> Finding:
         category=Category.STORAGE, provider="http", resource=ep.path,
         severity=Severity.CRITICAL, confidence=Confidence.LIKELY, cwe="CWE-538", owasp="API8:2023",
         evidence={"status": ep.status, "content_type": ep.content_type},
+        poc=f"curl -i '{base_url}{ep.path}'",
         remediation=Remediation(summary="Bloqueie o acesso ao arquivo no servidor/CDN e remova segredos versionados."),
     )

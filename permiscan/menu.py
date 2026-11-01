@@ -80,19 +80,32 @@ _ACTIONS = {
 }
 
 
-def _menu_text() -> str:
-    return (
-        "\n=== PermiScan ===\n"
-        "O que você quer fazer?\n"
-        "  1) Reconhecimento automático (só uma URL)\n"
-        "  2) Scan em massa (lista de sites)\n"
-        "  3) Auditoria automática Supabase (extrai chaves + testa RLS)\n"
-        "  4) Varredura externa Supabase (Data API)\n"
-        "  5) Detectar credenciais numa página ou arquivo\n"
-        "  6) Analisar banco PostgreSQL/Supabase (via DSN)\n"
-        "  7) Analisar Firebase Security Rules (arquivo)\n"
-        "  0) Sair"
-    )
+_OPTIONS = [
+    ("1", "Reconhecimento automático", "só uma URL"),
+    ("2", "Scan em massa", "lista de sites"),
+    ("3", "Auditoria automática Supabase", "extrai chaves + testa RLS"),
+    ("4", "Varredura externa Supabase", "Data API"),
+    ("5", "Detectar credenciais", "página ou arquivo"),
+    ("6", "Analisar banco PostgreSQL/Supabase", "via DSN"),
+    ("7", "Analisar Firebase Security Rules", "arquivo"),
+    ("0", "Sair", ""),
+]
+
+
+def _print_menu() -> None:
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from permiscan import report
+
+    t = Table.grid(padding=(0, 2))
+    t.add_column(justify="right", style="bold cyan")
+    t.add_column(style="bold")
+    t.add_column(style="grey62")
+    for num, label, hint in _OPTIONS:
+        t.add_row(num, label, hint)
+    report.console().print(Panel(t, title="[bold]PermiScan[/]", subtitle="o que você quer fazer?",
+                                 border_style="cyan", padding=(1, 2)))
 
 
 def _build(action: str) -> Namespace | None:
@@ -223,7 +236,7 @@ def _build(action: str) -> Namespace | None:
 
 def run_menu() -> int:
     while True:
-        print(_menu_text())
+        _print_menu()
         choice = _ask("Escolha")
         if choice in ("0", "", "sair", "q"):
             return 0

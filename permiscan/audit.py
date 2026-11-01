@@ -268,62 +268,35 @@ def save_audit_json(results: list[AuditResult], summary: AuditSummary, output: P
 
 
 def print_audit_report(results: list[AuditResult], summary: AuditSummary) -> None:
-    """Imprime relatório de auditoria."""
-    print("\n" + "=" * 70)
-    print("RELATORIO DE AUDITORIA SUPABASE (RLS)")
-    print("=" * 70)
-    print(f"\nTotal de instancias: {summary.total}")
-    print(f"[OK] Sucesso: {summary.successful}")
-    print(f"[X] Falha: {summary.failed}")
-    print(f"[KEY] Chaves encontradas: {summary.keys_found}")
-    print(f"\nVulnerabilidades encontradas:")
-    print(f"  - Instancias com findings: {summary.successful}")
-    print(f"  - Total de findings: {summary.total_findings}")
-    print(f"    - CRITICAL: {summary.critical_findings}")
-    print(f"    - HIGH: {summary.high_findings}")
-    print(f"    - MEDIUM: {summary.medium_findings}")
-    print(f"    - LOW: {summary.low_findings}")
-    print(f"    - INFO: {summary.info_findings}")
-    print(f"\nTempo total: {summary.scan_time:.2f}s")
-    print(f"Tempo medio por instancia: {summary.scan_time / summary.total:.2f}s")
-    
-    # Mostra instâncias com findings críticos
-    critical_insts = [r for r in results if r.critical_count > 0]
-    if critical_insts:
-        print("\n" + "=" * 70)
-        print("INSTANCIAS COM VULNERABILIDADES CRITICAS:")
-        print("=" * 70)
-        for r in critical_insts:
-            print(f"\n{r.supabase_url}")
-            print(f"  CRITICAL: {r.critical_count}, HIGH: {r.high_count}")
-            if r.source_url:
-                print(f"  Fonte: {r.source_url}")
-            for f in r.findings:
-                if f.get("severity") == "critical":
-                    print(f"    - {f.get('title')}")
-    
-    # Mostra instâncias com HIGH
-    high_insts = [r for r in results if r.high_count > 0 and r.critical_count == 0]
-    if high_insts:
-        print("\n" + "=" * 70)
-        print("INSTANCIAS COM VULNERABILIDADES ALTAS:")
-        print("=" * 70)
-        for r in high_insts:
-            print(f"\n{r.supabase_url}")
-            print(f"  HIGH: {r.high_count}, MEDIUM: {r.medium_count}")
-            if r.source_url:
-                print(f"  Fonte: {r.source_url}")
-    
-    # Mostra instâncias que falharam
-    failed_insts = [r for r in results if not r.success]
-    if failed_insts:
-        print("\n" + "=" * 70)
-        print(f"INSTANCIAS QUE FALHARAM ({len(failed_insts)}):")
-        print("=" * 70)
-        for r in failed_insts:
-            print(f"  [X] {r.supabase_url}")
-            if r.source_url:
-                print(f"      Fonte: {r.source_url}")
-            if r.key_found:
-                print(f"      Chave encontrada mas rejeitada (401) - mismatch chave/URL")
-            print(f"      Erro: {r.error}")
+    """Imprime relatório de auditoria (rich)."""
+    from rich.table import Table
+
+    from permiscan import report
+
+    avg = summary.scan_time / summary.total if summary.total else 0
+    sev = {"critical": summary.critical_findings, "high": summary.high_findings,
+           "medium": summary.medium_findings, "low": summary.low_findings, "info": summary.info_findings}
+    rows = [
+        ("instâncias", f"{summary.total}  ([green]{summary.successful} ok[/], [red]{summary.failed} falha[/])"),
+        ("chaves encontradas", str(summary.keys_found)),
+        ("tempo", f"{summary.scan_time:.1f}s total · {avg:.2f}s/instância"),
+    ]
+    con = report.console()
+    con.print(report.summary_block("Auditoria Supabase (RLS)", rows, sev))
+
+    vuln = [r for r in results if r.critical_count or r.high_count]
+    if vuln:
+        t = Table(title="Instâncias vulneráveis", title_style="bold red", title_justify="left")
+        t.add_column("instância"); t.add_column("crit", justify="right", style="red")
+        t.add_column("high", justify="right", style="dark_orange3"); t.add_column("fonte", style="grey62")
+        for r in sorted(vuln, key=lambda r: (-r.critical_count, -r.high_count)):
+            t.add_row(r.supabase_url, str(r.critical_count), str(r.high_count), r.source_url or "")
+        con.print(t)
+
+    failed = [r for r in results if not r.success]
+    if failed:
+        t = Table(title=f"Instâncias que falharam ({len(failed)})", title_style="bold", title_justify="left")
+        t.add_column("instância"); t.add_column("erro", style="grey62")
+        for r in failed:
+            t.add_row(r.supabase_url, str(r.error))
+        con.print(t)

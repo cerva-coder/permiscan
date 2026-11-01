@@ -18,8 +18,8 @@ def answers(monkeypatch):
 
 def test_scan_rules_flow_builds_expected_namespace(answers):
     captured = []
-    # escolha=5, caminho, serviço(vazio), formato(vazio), salvar(vazio), outra?=n
-    answers(["5", "firestore.rules", "", "", "", "n"], captured)
+    # escolha=7 (scan-rules), caminho, serviço(vazio), formato(vazio), salvar(vazio), outra?=n
+    answers(["7", "firestore.rules", "", "", "", "n"], captured)
     assert menu.run_menu() == 0
     [ns] = captured
     assert (ns.command, ns.rules, ns.service, ns.format, ns.output) == (
@@ -29,8 +29,8 @@ def test_scan_rules_flow_builds_expected_namespace(answers):
 def test_scan_api_flow_sets_key_env_and_probes(answers, monkeypatch):
     captured = []
     monkeypatch.delenv("PERMISCAN_ANON_KEY", raising=False)
-    # escolha=2, url, chave, linhas, escrita?=s, rpc?=s, destrutivo?=n, formato, salvar, outra?=n
-    answers(["2", "https://x.supabase.co", "anon-key-123", "5", "s", "s", "n", "", "", "n"], captured)
+    # escolha=4 (scan-api), url, chave, linhas, escrita?=s, rpc?=s, destrutivo?=n, formato, salvar, outra?=n
+    answers(["4", "https://x.supabase.co", "anon-key-123", "5", "s", "s", "n", "", "", "n"], captured)
     assert menu.run_menu() == 0
     [ns] = captured
     assert ns.command == "scan-api" and ns.url == "https://x.supabase.co"
@@ -63,8 +63,8 @@ def test_ask_bool_parsing(monkeypatch):
 
 def test_loop_runs_two_actions(answers):
     captured = []
-    # scan-rules, outra?=s, scan-rules de novo, outra?=n
-    answers(["5", "a.rules", "", "", "", "s", "5", "b.rules", "", "", "", "n"], captured)
+    # scan-rules (7), outra?=s, scan-rules de novo, outra?=n
+    answers(["7", "a.rules", "", "", "", "s", "7", "b.rules", "", "", "", "n"], captured)
     assert menu.run_menu() == 0
     assert [str(ns.rules) for ns in captured] == ["a.rules", "b.rules"]
 

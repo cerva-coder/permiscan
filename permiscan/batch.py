@@ -247,59 +247,38 @@ def save_csv(results: list[BatchResult], summary: BatchSummary, output: Path) ->
 
 
 def print_text_report(results: list[BatchResult], summary: BatchSummary) -> None:
-    """Imprime relatório em texto."""
-    print("\n" + "=" * 70)
-    print("RELATORIO DE SCAN EM MASSA")
-    print("=" * 70)
-    print(f"\nTotal de sites: {summary.total}")
-    print(f"[OK] Sucesso: {summary.successful}")
-    print(f"[X] Falha: {summary.failed}")
-    print(f"\nStacks detectadas:")
-    print(f"  - Supabase: {summary.with_supabase}")
-    print(f"  - Firebase: {summary.with_firebase}")
-    print(f"\nFindings:")
-    print(f"  - Sites com findings: {summary.with_findings}")
-    print(f"  - Total de findings: {summary.total_findings}")
-    print(f"    - CRITICAL: {summary.critical_findings}")
-    print(f"    - HIGH: {summary.high_findings}")
-    print(f"    - MEDIUM: {summary.medium_findings}")
-    print(f"    - LOW: {summary.low_findings}")
-    print(f"    - INFO: {summary.info_findings}")
-    print(f"\nTempo total: {summary.scan_time:.2f}s")
-    print(f"Tempo medio por site: {summary.scan_time / summary.total:.2f}s")
-    
-    # Mostra sites com findings críticos
+    """Imprime relatório em texto (rich)."""
+    from rich.table import Table
+    from rich.text import Text
+
+    from permiscan import report
+
+    avg = summary.scan_time / summary.total if summary.total else 0
+    sev = {"critical": summary.critical_findings, "high": summary.high_findings,
+           "medium": summary.medium_findings, "low": summary.low_findings, "info": summary.info_findings}
+    rows = [
+        ("sites", f"{summary.total}  ([green]{summary.successful} ok[/], [red]{summary.failed} falha[/])"),
+        ("stacks", f"Supabase: {summary.with_supabase}  ·  Firebase: {summary.with_firebase}"),
+        ("sites c/ findings", str(summary.with_findings)),
+        ("tempo", f"{summary.scan_time:.1f}s total · {avg:.2f}s/site"),
+    ]
+    con = report.console()
+    con.print(report.summary_block("Scan em massa", rows, sev))
+
     critical_sites = [r for r in results if r.critical_count > 0]
     if critical_sites:
-        print("\n" + "=" * 70)
-        print("SITES COM FINDINGS CRITICOS:")
-        print("=" * 70)
+        t = Table(title="Sites com findings críticos", title_style="bold red", title_justify="left")
+        t.add_column("site"); t.add_column("crit", justify="right", style="red")
+        t.add_column("high", justify="right", style="dark_orange3"); t.add_column("findings")
         for r in critical_sites:
-            print(f"\n{r.url}")
-            print(f"  CRITICAL: {r.critical_count}, HIGH: {r.high_count}")
-            for f in r.findings:
-                if f.get("severity") == "critical":
-                    print(f"    - {f.get('title')}")
-    
-    # Mostra sites com Supabase
-    supabase_sites = [r for r in results if r.has_supabase]
-    if supabase_sites:
-        print("\n" + "=" * 70)
-        print(f"SITES COM SUPABASE ({len(supabase_sites)}):")
-        print("=" * 70)
-        for r in supabase_sites:
-            status = "[OK]" if r.success else "[X]"
-            print(f"  {status} {r.url}")
-            if r.supabase_instances:
-                for inst in r.supabase_instances:
-                    print(f"      {inst}")
-    
-    # Mostra sites que falharam
+            titles = ", ".join(f.get("title", "") for f in r.findings if f.get("severity") == "critical")
+            t.add_row(r.url, str(r.critical_count), str(r.high_count), titles)
+        con.print(t)
+
     failed_sites = [r for r in results if not r.success]
     if failed_sites:
-        print("\n" + "=" * 70)
-        print(f"SITES QUE FALHARAM ({len(failed_sites)}):")
-        print("=" * 70)
+        t = Table(title=f"Sites que falharam ({len(failed_sites)})", title_style="bold", title_justify="left")
+        t.add_column("site"); t.add_column("erro", style="grey62")
         for r in failed_sites:
-            print(f"  [X] {r.url}")
-            print(f"      Erro: {r.error}")
+            t.add_row(r.url, str(r.error))
+        con.print(t)

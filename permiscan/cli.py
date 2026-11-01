@@ -32,6 +32,8 @@ from permiscan.batch import (
 from permiscan.discovery import Recon, ReconResult
 from permiscan.findings import Finding, Severity
 from permiscan.scope import ScopeError, authorize, load_scope, parse_dsn
+from permiscan import report
+from rich.text import Text
 
 EXIT_ERROR, EXIT_SCOPE, EXIT_FAIL_ON = 1, 2, 3
 
@@ -144,25 +146,6 @@ def _db_warnings(info: dict) -> list[str]:
     return out
 
 
-def _text_report(info: dict, findings: list[Finding]) -> str:
-    counts = Counter(f.severity for f in findings)
-    summary = ", ".join(f"{counts[s]} {s}" for s in Severity if counts[s]) or "nenhum"
-    lines = [f"PermiScan · {info['provider']} @ {info['target']}", f"Findings: {len(findings)} ({summary})", ""]
-    for f in findings:
-        refs = " · ".join(x for x in (f.cwe, f.owasp) if x)
-        lines += [
-            f"[{f.severity.upper()}] {f.title}",
-            f"  recurso:   {f.resource}",
-            f"  regra:     {f.rule_id} · confiança: {f.confidence} · {refs}",
-            f"  {f.description}",
-            f"  correção:  {f.remediation.summary}",
-        ]
-        if f.remediation.sql:
-            lines += ["    " + line for line in f.remediation.sql.splitlines()]
-        lines.append("")
-    return "\n".join(lines)
-
-
 def _emit(info: dict, findings: list[Finding], started: datetime, finished: datetime, args) -> int:
     if args.format == "json":
         output = json.dumps({
@@ -173,13 +156,13 @@ def _emit(info: dict, findings: list[Finding], started: datetime, finished: date
             "summary": dict(Counter(f.severity.value for f in findings)),
             "findings": [f.model_dump(mode="json") for f in findings],
         }, indent=2, ensure_ascii=False)
+        if args.output:
+            args.output.write_text(output, encoding="utf-8")
+        else:
+            print(output)
     else:
-        output = _text_report(info, findings)
-
-    if args.output:
-        args.output.write_text(output, encoding="utf-8")
-    else:
-        print(output)
+        group = report.findings_group(f"PermiScan · {info['provider']} @ {info['target']}", findings)
+        report.render(group, args.output)
 
     if args.fail_on and any(f.severity.rank <= Severity(args.fail_on).rank for f in findings):
         return EXIT_FAIL_ON
@@ -199,28 +182,28 @@ def _emit_recon(result: ReconResult, args) -> int:
             "findings": [f.model_dump(mode="json") for f in result.findings],
             "recommendations": result.recommendations,
         }, indent=2, ensure_ascii=False)
+        if args.output:
+            args.output.write_text(output, encoding="utf-8")
+        else:
+            print(output)
     else:
-        lines = [f"PermiScan recon · {result.target}", ""]
-        lines.append("Stack: " + (", ".join(f"{s.name} ({s.confidence})" for s in result.stacks) or "não identificada"))
+        rows = []
+        stacks = ", ".join(f"{s.name} ({s.confidence})" for s in result.stacks) or "não identificada"
+        rows.append(("stack", stacks))
         if result.firebase_config:
-            cfg = ", ".join(f"{k}={'***' if k == 'apiKey' else v}" for k, v in result.firebase_config.items())
-            lines.append(f"Firebase: {cfg}")
+            rows.append(("firebase", ", ".join(
+                f"{k}={'***' if k == 'apiKey' else v}" for k, v in result.firebase_config.items())))
         for inst in result.supabase_instances:
-            lines.append(f"Supabase: {inst.url} (chaves: {', '.join(k['role'] for k in inst.keys) or 'nenhuma'})")
+            rows.append(("supabase", f"{inst.url}  (chaves: {', '.join(k['role'] for k in inst.keys) or 'nenhuma'})"))
+        extra = [report.kv_table(rows)]
         if result.endpoints:
-            lines.append("Endpoints:")
-            lines += [f"  [{e.status}] {e.path}" + (f"  {e.content_type}" if e.content_type else "") for e in result.endpoints]
-        lines.append("")
-        lines.append(_text_report({"provider": "recon", "target": result.target}, result.findings))
+            extra += [Text("Endpoints descobertos:", style="bold"), report.endpoints_table(result.endpoints)]
         if result.recommendations:
-            lines.append("Recomendações:")
-            lines += [f"  - {r}" for r in result.recommendations]
-        output = "\n".join(lines)
+            extra += [Text("Recomendações:", style="bold"),
+                      *[Text(f"  • {r}", style="grey70") for r in result.recommendations]]
+        group = report.findings_group(f"PermiScan recon · {result.target}", result.findings, extra)
+        report.render(group, args.output)
 
-    if args.output:
-        args.output.write_text(output, encoding="utf-8")
-    else:
-        print(output)
     if args.fail_on and any(f.severity.rank <= Severity(args.fail_on).rank for f in result.findings):
         return EXIT_FAIL_ON
     return 0

@@ -343,6 +343,7 @@ class SupabaseApiScanner:
             resource=f"project:{claims.get('ref') or _project_ref(self.base_url) or self.base_url}",
             severity=Severity.CRITICAL, confidence=Confidence.CONFIRMED, cwe="CWE-200", owasp="API2:2023",
             evidence={"role": "service_role", "ref": claims.get("ref")},
+            poc=f"curl '{self.rest}/' -H 'apikey: $SERVICE_ROLE_KEY'  # acesso total, ignora RLS",
             remediation=Remediation(
                 summary="Revogue/rotacione a chave e use apenas a chave anon/publishable no cliente.",
                 references=[_DOCS_KEYS]),
@@ -365,6 +366,7 @@ class SupabaseApiScanner:
             severity=severity, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
             evidence={"columns": list(table.columns), "row_count": table.row_count,
                       "sensitive_columns": flagged, "sample": table.sample, "observed_as": "anon"},
+            poc=f"curl '{self.rest}/{table.name}?select=*&limit=3' -H 'apikey: $ANON_KEY'",
             remediation=Remediation(
                 summary="Habilite o RLS e crie policies que exijam autenticação e propriedade; se não deve ser "
                 "pública, revogue o acesso do papel anon.",
@@ -386,6 +388,8 @@ class SupabaseApiScanner:
             severity=Severity.CRITICAL if inserted else Severity.HIGH,
             confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
             evidence={"probe": "POST {}", "result": result, "observed_as": "anon"},
+            poc=f"curl -X POST '{self.rest}/{name}' -H 'apikey: $ANON_KEY' "
+            "-H 'Content-Type: application/json' -d '{}'",
             remediation=Remediation(
                 summary="Habilite o RLS e crie policy de INSERT que exija autenticação e propriedade; revogue "
                 "INSERT/UPDATE/DELETE do papel anon se a escrita não deve ser pública.",
@@ -405,6 +409,8 @@ class SupabaseApiScanner:
             severity=risk if risk.rank < Severity.MEDIUM.rank else Severity.MEDIUM,
             confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API5:2023",
             evidence={"probe": "POST {}", "risk_by_name": risk.value, "observed_as": "anon"},
+            poc=f"curl -X POST '{self.rest}/rpc/{name}' -H 'apikey: $ANON_KEY' "
+            "-H 'Content-Type: application/json' -d '{}'",
             remediation=Remediation(
                 summary="Restrinja a execução (REVOKE EXECUTE … FROM anon) ou valide auth.uid() dentro da "
                 "função; exponha pela Data API só as funções que devem ser públicas.",
