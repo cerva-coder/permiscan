@@ -8,6 +8,7 @@ As funções de parsing são puras (texto → sinais) e testáveis sem rede; o a
 isolado em `Recon._get`, sobrescrevível nos testes.
 """
 
+import json
 import re
 import urllib.error
 import urllib.parse
@@ -174,12 +175,25 @@ def script_srcs(html: str, base_url: str) -> list[str]:
 # --- Orquestração (HTTP isolado em _get) ------------------------------------
 
 
+# Nível de scan: controla o quão fundo e agressivo o recon vai.
+SCAN_LEVELS = {1: "mínimo (identifica)", 2: "médio (enumera/lê)", 3: "máximo (extrai/ativo)"}
+
+
+def options_for_level(level: int) -> ApiScanOptions:
+    return {
+        1: ApiScanOptions(rows=1),
+        2: ApiScanOptions(rows=5, probe_rpc=True),
+        3: ApiScanOptions(rows=25, probe_writes=True, probe_rpc=True, include_destructive=True),
+    }[level]
+
+
 class Recon:
-    def __init__(self, url: str, options: ApiScanOptions | None = None):
+    def __init__(self, url: str, options: ApiScanOptions | None = None, level: int = 2):
         if not url.startswith(("http://", "https://")):
             raise AdapterError("a URL deve começar com http:// ou https://")
         self.url = url.rstrip("/")
-        self.options = options or ApiScanOptions()
+        self.level = level
+        self.options = options or options_for_level(level)
 
     def _get(self, url: str) -> tuple[int, dict, str]:
         return self._http(urllib.request.Request(url, headers={"User-Agent": "permiscan-recon"}))
@@ -275,39 +289,49 @@ class Recon:
         elif pid:  # tenta a URL padrão de RTDB derivada do projeto
             findings += self._probe_rtdb(f"https://{pid}-default-rtdb.firebaseio.com")
 
-        if pid and key:
+        # Firestore: enumeração de coleções só a partir do nível 2.
+        if self.level >= 2 and pid and key:
             findings += self._probe_firestore(pid, key)
 
         bucket = cfg.get("storageBucket") or (f"{pid}.appspot.com" if pid else None)
         if bucket:
             findings += self._probe_storage(bucket)
 
-        if self.options.probe_writes and key:
+        # Signup aberto: só no nível 3 (cria um usuário no alvo).
+        if self.level >= 3 and key:
             findings += self._probe_auth_signup(key)
         return findings
 
     def _probe_firestore(self, project_id: str, api_key: str) -> list[Finding]:
-        accessible = []
+        page = 5 if self.level >= 3 else 1  # nível 3 extrai mais documentos
+        found: dict[str, list[str]] = {}
         for col in COMMON_COLLECTIONS:
             url = (f"https://firestore.googleapis.com/v1/projects/{project_id}"
-                   f"/databases/(default)/documents/{col}?pageSize=1&key={api_key}")
+                   f"/databases/(default)/documents/{col}?pageSize={page}&key={api_key}")
             try:
                 st, _, body = self._get(url)
             except AdapterError:
                 continue
             if st == 200 and '"documents"' in body:
-                accessible.append(col)
-        return [_firestore_finding(project_id, accessible)] if accessible else []
+                docs = re.findall(r'"name":\s*"projects/[^"]*?/documents/([^"]+)"', body)
+                found[col] = docs[:page]
+        return [_firestore_finding(project_id, found, self.level)] if found else []
 
     def _probe_storage(self, bucket: str) -> list[Finding]:
-        url = f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o?maxResults=10"
+        limit = 100 if self.level >= 3 else 10
+        url = f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o?maxResults={limit}"
         try:
             st, _, body = self._get(url)
         except AdapterError:
             return []
-        if st == 200 and ('"items"' in body or '"prefixes"' in body):
-            return [_storage_finding(bucket, url)]
-        return []
+        if st != 200 or ('"items"' not in body and '"prefixes"' not in body):
+            return []
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            data = {}
+        names = [it.get("name", "") for it in data.get("items", [])][:50]
+        return [_storage_finding(bucket, url, names, self.level)]
 
     def _probe_auth_signup(self, api_key: str) -> list[Finding]:
         url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}"
@@ -429,20 +453,25 @@ _FB_DB_DOCS = "https://firebase.google.com/docs/firestore/security/get-started"
 _FB_STORAGE_DOCS = "https://firebase.google.com/docs/storage/security"
 
 
-def _firestore_finding(project_id: str, collections: list[str]) -> Finding:
-    cols = ", ".join(collections)
+def _firestore_finding(project_id: str, found: dict[str, list[str]], level: int) -> Finding:
+    cols = list(found)
+    sample = {c: docs for c, docs in found.items() if docs}
+    desc = (
+        f"As coleções [{', '.join(cols)}] do projeto {project_id} retornaram documentos para uma "
+        "leitura anônima via REST: as Security Rules permitem leitura pública."
+    )
+    if level >= 3 and sample:
+        first = next(iter(sample))
+        desc += f" Amostra extraída de '{first}': {', '.join(sample[first][:3])}."
     return Finding(
         rule_id="firebase-firestore-public-read",
         title="Coleções do Firestore legíveis sem autenticação",
-        description=(
-            f"As coleções [{cols}] do projeto {project_id} retornaram documentos para uma leitura "
-            "anônima via REST: as Security Rules permitem leitura pública. Confirme se é intencional."
-        ),
+        description=desc,
         category=Category.AUTHORIZATION, provider="firebase", resource=f"firestore:{project_id}",
         severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
-        evidence={"observed_as": "anon", "collections": collections},
+        evidence={"observed_as": "anon", "collections": cols, "sample_documents": sample},
         poc=f"curl 'https://firestore.googleapis.com/v1/projects/{project_id}"
-        f"/databases/(default)/documents/{collections[0]}?key=$FIREBASE_API_KEY'",
+        f"/databases/(default)/documents/{cols[0]}?key=$FIREBASE_API_KEY'",
         remediation=Remediation(
             summary="Exija autenticação e propriedade nas rules "
             "(ex.: 'allow read: if request.auth != null && request.auth.uid == resource.data.ownerId').",
@@ -450,17 +479,26 @@ def _firestore_finding(project_id: str, collections: list[str]) -> Finding:
     )
 
 
-def _storage_finding(bucket: str, url: str) -> Finding:
+def _storage_finding(bucket: str, url: str, names: list[str], level: int) -> Finding:
+    desc = (
+        f"O bucket {bucket} respondeu à listagem anônima de objetos: as rules de Storage permitem "
+        "acesso sem autenticação, expondo os arquivos armazenados."
+    )
+    if names:
+        desc += f" {len(names)} arquivo(s) visíveis, ex.: {', '.join(names[:5])}."
+    evidence = {"observed_as": "anon", "bucket": bucket, "files": names}
+    if level >= 3 and names:  # extração: URLs de download diretas
+        evidence["download_urls"] = [
+            f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{urllib.parse.quote(n, safe='')}?alt=media"
+            for n in names[:20]
+        ]
     return Finding(
         rule_id="firebase-storage-public-list",
         title="Firebase Storage com listagem pública",
-        description=(
-            f"O bucket {bucket} respondeu à listagem anônima de objetos: as rules de Storage permitem "
-            "acesso sem autenticação, expondo os arquivos armazenados."
-        ),
+        description=desc,
         category=Category.STORAGE, provider="firebase", resource=f"storage:{bucket}",
         severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
-        evidence={"observed_as": "anon", "bucket": bucket},
+        evidence=evidence,
         poc=f"curl '{url}'",
         remediation=Remediation(
             summary="Exija autenticação nas rules de Storage e vincule o acesso ao dono do arquivo.",

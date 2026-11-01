@@ -63,8 +63,8 @@ def test_script_srcs_resolves_and_filters():
 # --- Orquestração (HTTP injetado) -------------------------------------------
 
 class FakeRecon(Recon):
-    def __init__(self, pages):
-        super().__init__("https://app.test")
+    def __init__(self, pages, level=2):
+        super().__init__("https://app.test", level=level)
         self.pages = pages
         self.scanned = []
 
@@ -72,6 +72,9 @@ class FakeRecon(Recon):
 
     def _get(self, url):
         return self.pages.get(url, (200, {"content-type": "text/html"}, self.SPA))
+
+    def _post(self, url, data):  # nunca faz POST real em teste (signup)
+        return self.pages.get(url, (400, {}, ""))
 
     def _scan_supabase(self, inst):
         self.scanned.append(inst.url)
@@ -135,10 +138,19 @@ def test_firestore_and_storage_enumeration():
             (200, {}, '{"documents":[{"name":"users/1"}]}'),
         "https://firebasestorage.googleapis.com/v0/b/demo.appspot.com/o?maxResults=10":
             (200, {}, '{"items":[{"name":"a.png"}]}'),
+        # nível 3 usa maxResults=100:
+        "https://firebasestorage.googleapis.com/v0/b/demo.appspot.com/o?maxResults=100":
+            (200, {}, '{"items":[{"name":"a.png"}]}'),
     }
-    rules = {f.rule_id for f in FakeRecon(pages).run().findings}
-    assert "firebase-firestore-public-read" in rules
-    assert "firebase-storage-public-list" in rules
+    findings = {f.rule_id: f for f in FakeRecon(pages).run().findings}
+    assert "firebase-firestore-public-read" in findings
+    storage = findings["firebase-storage-public-list"]
+    assert storage.evidence["files"] == ["a.png"]  # drill-down: lista os arquivos
+    assert "download_urls" not in storage.evidence  # nível 2 não extrai URLs
+
+    # nível 3 extrai as URLs de download diretas
+    storage3 = {f.rule_id: f for f in FakeRecon(pages, level=3).run().findings}["firebase-storage-public-list"]
+    assert storage3.evidence["download_urls"][0].endswith("a.png?alt=media")
 
 
 def test_firebase_config_discovered_from_runtime_file():

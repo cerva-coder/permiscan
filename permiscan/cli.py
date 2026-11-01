@@ -29,7 +29,7 @@ from permiscan.batch import (
     save_json,
     scan_batch,
 )
-from permiscan.discovery import Recon, ReconResult
+from permiscan.discovery import Recon, ReconResult, options_for_level
 from permiscan.findings import Finding, Severity
 from permiscan.scope import ScopeError, authorize, load_scope, parse_dsn
 from permiscan import report
@@ -95,6 +95,8 @@ def _parser() -> argparse.ArgumentParser:
     rec = sub.add_parser("recon", parents=[report, probe],
                          help="dado só uma URL, identifica a stack e roda as análises cabíveis")
     rec.add_argument("url", help="URL do alvo, ex.: https://app.exemplo.com")
+    rec.add_argument("--level", type=int, choices=[1, 2, 3], default=2,
+                     help="1=mínimo (identifica), 2=médio (enumera/lê), 3=máximo (extrai/ativo)")
 
     # Processamento em massa de sites.
     batch = sub.add_parser("batch", parents=[report, probe],
@@ -292,9 +294,13 @@ def dispatch(args) -> int:
                 print(json.dumps(info, indent=2, ensure_ascii=False))
                 return 0
         elif args.command == "recon":
-            opt = _options(args)
+            opt = options_for_level(args.level)
+            # flags explícitas podem escalar além do nível
+            opt.probe_writes |= args.probe_writes
+            opt.probe_rpc |= args.probe_rpc
+            opt.include_destructive |= args.include_destructive
             _probe_warnings(opt)
-            return _emit_recon(Recon(args.url, opt).run(), args)
+            return _emit_recon(Recon(args.url, opt, level=args.level).run(), args)
         elif args.command == "batch":
             opt = _options(args)
             _probe_warnings(opt)
