@@ -35,7 +35,10 @@ def has_resources(rec: dict) -> bool:
 def survey_many(urls: list[str], level: int = 1, workers: int = 8, progress=None) -> list[dict]:
     def work(u: str) -> dict:
         try:
-            return _record(u, Recon(u, level=level).run(), None)
+            result = Recon(u, level=level).run()
+            from permiscan import store
+            store.enroll(result, "triagem")  # alvo vulnerável achado na massa já fica salvo
+            return _record(u, result, None)
         except Exception as e:  # noqa: BLE001 — um site quebrado não derruba o lote
             return _record(u, None, str(e))
 

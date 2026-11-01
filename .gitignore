@@ -23,6 +23,8 @@ node_modules/
 # Saídas de varredura (relatórios e listas de alvos nunca vão para o git)
 reports/out/
 scans/
+permiscan.db
+permiscan.db-*
 *.findings.json
 *results.json
 *results.csv

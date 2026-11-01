@@ -132,6 +132,12 @@ def _parser() -> argparse.ArgumentParser:
     rules.add_argument("--rules", type=Path, required=True, help="caminho do arquivo de regras")
     rules.add_argument("--service", choices=["firestore", "storage", "database", "rtdb"],
                        help="serviço das regras (detectado pelo nome do arquivo se omitido)")
+
+    # Plataforma web local sobre o banco de alvos salvos.
+    srv = sub.add_parser("serve", help="abre a plataforma web local (dashboard de alvos)")
+    srv.add_argument("--host", default="127.0.0.1")
+    srv.add_argument("--port", type=int, default=8080)
+    srv.add_argument("--no-browser", action="store_true", help="não abrir o navegador automaticamente")
     return parser
 
 
@@ -299,7 +305,14 @@ def dispatch(args) -> int:
             opt.probe_rpc |= args.probe_rpc
             opt.include_destructive |= args.include_destructive
             _probe_warnings(opt)
-            return _emit_recon(Recon(args.url, opt, level=args.level).run(), args)
+            result = Recon(args.url, opt, level=args.level).run()
+            from permiscan import store
+            store.enroll(result, "recon-cli")
+            return _emit_recon(result, args)
+        elif args.command == "serve":
+            from permiscan.serve import serve
+            serve(args.host, args.port, open_browser=not args.no_browser)
+            return 0
         elif args.command == "batch":
             opt = _options(args)
             _probe_warnings(opt)

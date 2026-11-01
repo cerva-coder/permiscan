@@ -93,7 +93,10 @@ def _scan_site(url: str, options: ApiScanOptions) -> BatchResult:
     try:
         recon = Recon(url, options)
         recon_result = recon.run()
-        
+
+        from permiscan import store
+        store.enroll(recon_result, "batch")
+
         result.success = True
         result.stacks = [s.name for s in recon_result.stacks]
         result.has_supabase = any(s.name == "supabase" for s in recon_result.stacks)

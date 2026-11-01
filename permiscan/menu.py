@@ -7,6 +7,7 @@ o recon identifica a stack e vai fundo sozinho (enumera e, no nível 3, extrai).
 from argparse import Namespace
 from pathlib import Path
 
+from permiscan import store
 from permiscan.discovery import SCAN_LEVELS, Recon
 from permiscan.survey import (
     has_resources, list_scans, load_survey, load_urls, next_scan_path, save_survey, survey_many,
@@ -43,6 +44,7 @@ def _print_menu() -> None:
         ("1", "Scan individual", "uma URL, totalmente automático"),
         ("2", "Scan em massa", "triagem de uma lista de sites"),
         ("3", "Explorar lista salva", "aprofunda os alvos achados na triagem"),
+        ("4", "Plataforma web", "abre o dashboard dos alvos salvos no navegador"),
         ("0", "Sair", ""),
     ):
         t.add_row(num, label, hint)
@@ -60,7 +62,9 @@ def _run_individual() -> None:
     if not url:
         return
     print(f"\nScan nível {level} ({SCAN_LEVELS[level]}) em {url}…\n")
-    _print_recon(Recon(url, level=level).run())
+    result = Recon(url, level=level).run()
+    store.enroll(result, "menu-individual")
+    _print_recon(result)
 
 
 def _collect_urls() -> list[str]:
@@ -149,12 +153,22 @@ def _run_explore() -> None:
     for url in targets:
         print(f"\n{'─' * 60}\n{url}\n")
         try:
-            _print_recon(Recon(url, level=level).run())
+            result = Recon(url, level=level).run()
+            store.enroll(result, "menu-explore")
+            _print_recon(result)
         except Exception as e:  # noqa: BLE001
             print(f"erro em {url}: {e}")
 
 
-_MODES = {"1": _run_individual, "2": _run_mass, "3": _run_explore}
+def _run_web() -> None:
+    from permiscan.serve import serve
+
+    n = store.stats()["targets"]
+    print(f"{n} alvo(s) no banco. Abrindo a plataforma web…")
+    serve()
+
+
+_MODES = {"1": _run_individual, "2": _run_mass, "3": _run_explore, "4": _run_web}
 
 
 def run_menu() -> int:
