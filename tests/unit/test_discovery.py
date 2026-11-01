@@ -68,8 +68,10 @@ class FakeRecon(Recon):
         self.pages = pages
         self.scanned = []
 
+    SPA = "<html>spa</html>"  # resposta de catch-all da SPA (corpo idêntico em toda rota)
+
     def _get(self, url):
-        return self.pages.get(url, (200, {"Content-Type": "text/html"}, "<html>spa</html>"))
+        return self.pages.get(url, (200, {"content-type": "text/html"}, self.SPA))
 
     def _scan_supabase(self, inst):
         self.scanned.append(inst.url)
@@ -85,12 +87,12 @@ def test_recon_identifies_routes_and_credentials():
         'const aws="AKIAIOSFODNN7EXAMPLE";</script></html>'
     )
     pages = {
-        "https://app.test": (200, {"Content-Type": "text/html"}, html),
-        # catch-all da SPA (baseline) responde 200 html:
-        "https://app.test/permiscan-probe-404-xyz": (200, {"Content-Type": "text/html"}, "spa"),
-        # endpoints de verdade (não-html) devem sobreviver ao filtro de catch-all:
-        "https://app.test/rest/v1/": (200, {"Content-Type": "application/openapi+json"}, "{}"),
-        "https://app.test/.env": (200, {"Content-Type": "application/json"}, "SECRET=1"),
+        "https://app.test": (200, {"content-type": "text/html"}, html),
+        # baseline do catch-all == resposta padrão da SPA (FakeRecon.SPA):
+        "https://app.test/permiscan-probe-404-xyz": (200, {"content-type": "text/html"}, FakeRecon.SPA),
+        # endpoints de verdade (corpo diferente da baseline) sobrevivem ao filtro:
+        "https://app.test/rest/v1/": (200, {"content-type": "application/openapi+json"}, "{}"),
+        "https://app.test/.env": (200, {"content-type": "application/json"}, "SECRET=1"),
         # RTDB legível sem auth:
         "https://proj.firebaseio.com/.json?shallow=true": (200, {}, '{"users":true,"config":true}'),
     }
@@ -113,6 +115,39 @@ def test_recon_routes_supabase_instances_to_the_scanner():
     fake = FakeRecon({"https://app.test": (200, {"Content-Type": "text/html"}, html)})
     fake.run()
     assert fake.scanned == ["https://xyz.supabase.co"]
+
+
+def test_spa_catch_all_is_not_reported_as_exposed_files():
+    # SPA que devolve o MESMO corpo (inclusive para /.env e /.git/config): nada é finding.
+    recon = FakeRecon({"https://app.test": (200, {"content-type": "text/html"}, FakeRecon.SPA)})
+    result = recon.run()
+    assert result.endpoints == []
+    assert all(f.rule_id != "exposed-sensitive-file" for f in result.findings)
+
+
+def test_firestore_and_storage_enumeration():
+    html = ('<script>const c={apiKey:"AIzak",authDomain:"demo.firebaseapp.com",'
+            'projectId:"demo",storageBucket:"demo.appspot.com"}</script>')
+    pages = {
+        "https://app.test": (200, {"content-type": "text/html"}, html),
+        "https://app.test/permiscan-probe-404-xyz": (200, {"content-type": "text/html"}, FakeRecon.SPA),
+        "https://firestore.googleapis.com/v1/projects/demo/databases/(default)/documents/users?pageSize=1&key=AIzak":
+            (200, {}, '{"documents":[{"name":"users/1"}]}'),
+        "https://firebasestorage.googleapis.com/v0/b/demo.appspot.com/o?maxResults=10":
+            (200, {}, '{"items":[{"name":"a.png"}]}'),
+    }
+    rules = {f.rule_id for f in FakeRecon(pages).run().findings}
+    assert "firebase-firestore-public-read" in rules
+    assert "firebase-storage-public-list" in rules
+
+
+def test_firebase_config_discovered_from_runtime_file():
+    pages = {
+        "https://app.test": (200, {"content-type": "text/html"}, "<html>no config</html>"),
+        "https://app.test/__/firebase/init.json":
+            (200, {"content-type": "application/json"}, '{"projectId":"demo","apiKey":"AIzak"}'),
+    }
+    assert FakeRecon(pages).run().firebase_config.get("projectId") == "demo"
 
 
 def test_recon_recommends_scan_rules_when_firebase_without_findings():

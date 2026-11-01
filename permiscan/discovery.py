@@ -49,6 +49,7 @@ class Endpoint:
     path: str
     status: int
     content_type: str = ""
+    is_html: bool = False
 
 
 @dataclass
@@ -66,14 +67,32 @@ class ReconResult:
 
 
 def extract_firebase_config(text: str) -> dict:
-    """Puxa os campos do firebaseConfig (objeto JS, não JSON estrito)."""
+    """Puxa os campos do firebaseConfig de objeto JS (apiKey:"x") ou JSON ("apiKey":"x")."""
     out = {}
     for key in ("apiKey", "authDomain", "projectId", "databaseURL", "storageBucket",
                 "appId", "messagingSenderId"):
-        m = re.search(rf'{key}\s*:\s*["\']([^"\']+)["\']', text)
+        m = re.search(rf'["\']?{key}["\']?\s*:\s*["\']([^"\']+)["\']', text)
         if m:
             out[key] = m.group(1)
     return out
+
+
+def _looks_html(body: str) -> bool:
+    head = body[:300].lstrip().lower()
+    return head.startswith(("<!doctype html", "<html")) or "<head" in head or "<body" in head
+
+
+def _body_sig(body: str) -> tuple[int, str]:
+    import hashlib
+    return len(body), hashlib.sha256(body[:20000].encode("utf-8", "replace")).hexdigest()[:16]
+
+
+# Coleções comuns tentadas na enumeração automática do Firestore.
+COMMON_COLLECTIONS = (
+    "users", "players", "profiles", "accounts", "scores", "scoreboard", "leaderboard",
+    "rankings", "ranking", "games", "matches", "items", "inventory", "config", "settings",
+    "messages", "chats", "posts", "orders", "payments", "transactions", "admin", "logs", "feedback",
+)
 
 
 def detect_stacks(text: str, headers: dict | None = None) -> list[StackSignal]:
@@ -163,14 +182,23 @@ class Recon:
         self.options = options or ApiScanOptions()
 
     def _get(self, url: str) -> tuple[int, dict, str]:
-        req = urllib.request.Request(url, headers={"User-Agent": "permiscan-recon"})
+        return self._http(urllib.request.Request(url, headers={"User-Agent": "permiscan-recon"}))
+
+    def _post(self, url: str, data: bytes) -> tuple[int, dict, str]:
+        return self._http(urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"User-Agent": "permiscan-recon", "Content-Type": "application/json"}))
+
+    def _http(self, req) -> tuple[int, dict, str]:
+        def norm(headers):  # chaves minúsculas: alguns servidores mandam 'content-type' minúsculo
+            return {k.lower(): v for k, v in dict(headers).items()}
         try:
             with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310 (esquema validado)
-                return resp.status, dict(resp.headers), resp.read(_MAX_BYTES).decode("utf-8", errors="replace")
+                return resp.status, norm(resp.headers), resp.read(_MAX_BYTES).decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
-            return e.code, dict(e.headers), e.read(_MAX_BYTES).decode("utf-8", errors="replace")
+            return e.code, norm(e.headers), e.read(_MAX_BYTES).decode("utf-8", errors="replace")
         except urllib.error.URLError as e:
-            raise AdapterError(f"falha ao buscar {url}: {e.reason}") from None
+            raise AdapterError(f"falha ao buscar {req.full_url}: {e.reason}") from None
 
     def _scan_supabase(self, inst: DetectedInstance) -> list[Finding]:
         return SupabaseApiScanner(inst.url, inst.anon_key, self.options).scan()
@@ -190,9 +218,12 @@ class Recon:
                 break
 
         result.stacks = detect_stacks(text, headers)
-        result.firebase_config = extract_firebase_config(text)
-        sb_instances = detect_instances(text)
-        result.supabase_instances = sb_instances
+        page_cfg = extract_firebase_config(text)
+        # Se a config não veio da página/bundle, procura em arquivos de runtime do Firebase.
+        if not page_cfg.get("projectId"):
+            page_cfg = {**self._discover_firebase_config(), **page_cfg}
+        result.firebase_config = page_cfg
+        result.supabase_instances = detect_instances(text)
         result.endpoints = self._discover_endpoints(html)
         result.findings = self._route(result, text)
         result.recommendations = self._recommend(result)
@@ -200,21 +231,93 @@ class Recon:
         return result
 
     def _discover_endpoints(self, html: str) -> list[Endpoint]:
-        # Baseline: rota aleatória para detectar catch-all de SPA (200 html p/ tudo).
-        base_status, base_headers, _ = self._get(f"{self.url}/permiscan-probe-404-xyz")
-        base_html = "html" in base_headers.get("Content-Type", "").lower()
+        # Baseline: rota aleatória. Numa SPA, todo caminho devolve o MESMO index.html;
+        # comparamos o corpo (não o status/header) para não dar falso positivo.
+        try:
+            _, _, base_body = self._get(f"{self.url}/permiscan-probe-404-xyz")
+        except AdapterError:
+            base_body = "\x00no-baseline"
+        base_sig = _body_sig(base_body)
         endpoints = []
         for route in COMMON_ROUTES:
             try:
-                st, hd, _ = self._get(f"{self.url}{route}")
+                st, hd, body = self._get(f"{self.url}{route}")
             except AdapterError:
                 continue
-            ctype = hd.get("Content-Type", "").split(";")[0]
-            # Ignora o que é só o catch-all da SPA respondendo igual à baseline.
-            if st == base_status and base_html and "html" in ctype.lower():
+            if _body_sig(body) == base_sig:  # catch-all da SPA: mesmo corpo da baseline
                 continue
-            endpoints.append(Endpoint(route, st, ctype))
+            ctype = hd.get("content-type", "").split(";")[0]
+            endpoints.append(Endpoint(route, st, ctype, is_html=_looks_html(body)))
         return endpoints
+
+    # --- Enumeração automática do Firebase ----------------------------------
+
+    def _discover_firebase_config(self) -> dict:
+        for path in ("/__/firebase/init.json", "/config.json", "/firebase-config.json",
+                     "/env.js", "/config.js", "/assets/config.js"):
+            try:
+                st, _, body = self._get(f"{self.url}{path}")
+            except AdapterError:
+                continue
+            if st == 200 and not _looks_html(body):
+                cfg = extract_firebase_config(body)
+                if cfg.get("projectId"):
+                    return cfg
+        return {}
+
+    def _enumerate_firebase(self, cfg: dict) -> list[Finding]:
+        findings: list[Finding] = []
+        pid, key = cfg.get("projectId"), cfg.get("apiKey")
+
+        db = cfg.get("databaseURL")
+        if db:
+            findings += self._probe_rtdb(db)
+        elif pid:  # tenta a URL padrão de RTDB derivada do projeto
+            findings += self._probe_rtdb(f"https://{pid}-default-rtdb.firebaseio.com")
+
+        if pid and key:
+            findings += self._probe_firestore(pid, key)
+
+        bucket = cfg.get("storageBucket") or (f"{pid}.appspot.com" if pid else None)
+        if bucket:
+            findings += self._probe_storage(bucket)
+
+        if self.options.probe_writes and key:
+            findings += self._probe_auth_signup(key)
+        return findings
+
+    def _probe_firestore(self, project_id: str, api_key: str) -> list[Finding]:
+        accessible = []
+        for col in COMMON_COLLECTIONS:
+            url = (f"https://firestore.googleapis.com/v1/projects/{project_id}"
+                   f"/databases/(default)/documents/{col}?pageSize=1&key={api_key}")
+            try:
+                st, _, body = self._get(url)
+            except AdapterError:
+                continue
+            if st == 200 and '"documents"' in body:
+                accessible.append(col)
+        return [_firestore_finding(project_id, accessible)] if accessible else []
+
+    def _probe_storage(self, bucket: str) -> list[Finding]:
+        url = f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o?maxResults=10"
+        try:
+            st, _, body = self._get(url)
+        except AdapterError:
+            return []
+        if st == 200 and ('"items"' in body or '"prefixes"' in body):
+            return [_storage_finding(bucket, url)]
+        return []
+
+    def _probe_auth_signup(self, api_key: str) -> list[Finding]:
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}"
+        try:
+            st, _, body = self._post(url, b'{"returnSecureToken":true}')
+        except AdapterError:
+            return []
+        if st == 200 and '"idToken"' in body:
+            return [_auth_signup_finding(url)]
+        return []
 
     def _route(self, result: ReconResult, text: str) -> list[Finding]:
         findings: list[Finding] = []
@@ -255,15 +358,16 @@ class Recon:
                             remediation=Remediation(summary="Verifique se a URL e a chave estão corretas.")
                         ))
 
-        db_url = result.firebase_config.get("databaseURL")
-        if db_url:
-            findings += self._probe_rtdb(db_url)
+        if result.firebase_config.get("projectId") or result.firebase_config.get("databaseURL"):
+            findings += self._enumerate_firebase(result.firebase_config)
 
         for key in sorted(set(_AWS_ACCESS_KEY.findall(text))):
             findings.append(_aws_key_finding(key))
 
         for ep in result.endpoints:
-            if ep.path in _SENSITIVE_ROUTES and ep.status == 200 and "html" not in ep.content_type.lower():
+            # Arquivo sensível exposto: só quando o corpo difere do catch-all (já filtrado em
+            # _discover_endpoints) E não é HTML (um index.html de fallback não é um .env real).
+            if ep.path in _SENSITIVE_ROUTES and ep.status == 200 and not ep.is_html:
                 findings.append(_exposed_file_finding(self.url, ep))
 
         return findings
@@ -273,7 +377,8 @@ class Recon:
             status, headers, body = self._get(f"{db_url.rstrip('/')}/.json?shallow=true")
         except AdapterError:
             return []
-        if status == 200 and body.strip() not in ("", "null"):
+        # RTDB devolve JSON; um 200 com HTML é página de erro/SPA, não dado exposto.
+        if status == 200 and not _looks_html(body) and body.strip() not in ("", "null"):
             keys = re.findall(r'"([^"]+)"\s*:', body)[:20]
             return [Finding(
                 rule_id="firebase-rtdb-public-read",
@@ -317,6 +422,69 @@ def _aws_key_finding(key: str) -> Finding:
         evidence={"key_id_prefix": key[:8]},
         remediation=Remediation(summary="Rotacione a chave imediatamente e mova as credenciais para o servidor.",
                                 references=["https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html"]),
+    )
+
+
+_FB_DB_DOCS = "https://firebase.google.com/docs/firestore/security/get-started"
+_FB_STORAGE_DOCS = "https://firebase.google.com/docs/storage/security"
+
+
+def _firestore_finding(project_id: str, collections: list[str]) -> Finding:
+    cols = ", ".join(collections)
+    return Finding(
+        rule_id="firebase-firestore-public-read",
+        title="Coleções do Firestore legíveis sem autenticação",
+        description=(
+            f"As coleções [{cols}] do projeto {project_id} retornaram documentos para uma leitura "
+            "anônima via REST: as Security Rules permitem leitura pública. Confirme se é intencional."
+        ),
+        category=Category.AUTHORIZATION, provider="firebase", resource=f"firestore:{project_id}",
+        severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
+        evidence={"observed_as": "anon", "collections": collections},
+        poc=f"curl 'https://firestore.googleapis.com/v1/projects/{project_id}"
+        f"/databases/(default)/documents/{collections[0]}?key=$FIREBASE_API_KEY'",
+        remediation=Remediation(
+            summary="Exija autenticação e propriedade nas rules "
+            "(ex.: 'allow read: if request.auth != null && request.auth.uid == resource.data.ownerId').",
+            references=[_FB_DB_DOCS]),
+    )
+
+
+def _storage_finding(bucket: str, url: str) -> Finding:
+    return Finding(
+        rule_id="firebase-storage-public-list",
+        title="Firebase Storage com listagem pública",
+        description=(
+            f"O bucket {bucket} respondeu à listagem anônima de objetos: as rules de Storage permitem "
+            "acesso sem autenticação, expondo os arquivos armazenados."
+        ),
+        category=Category.STORAGE, provider="firebase", resource=f"storage:{bucket}",
+        severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
+        evidence={"observed_as": "anon", "bucket": bucket},
+        poc=f"curl '{url}'",
+        remediation=Remediation(
+            summary="Exija autenticação nas rules de Storage e vincule o acesso ao dono do arquivo.",
+            references=[_FB_STORAGE_DOCS]),
+    )
+
+
+def _auth_signup_finding(url: str) -> Finding:
+    return Finding(
+        rule_id="firebase-auth-signup-open",
+        title="Cadastro de usuários aberto (Firebase Auth)",
+        description=(
+            "O endpoint de signup do Identity Toolkit criou um usuário sem restrição: qualquer um pode "
+            "se cadastrar e obter um idToken. Combinado com rules que confiam em request.auth != null, "
+            "isso dá acesso a dados 'só para autenticados'."
+        ),
+        category=Category.AUTHENTICATION, provider="firebase", resource="firebase-auth:signUp",
+        severity=Severity.MEDIUM, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API2:2023",
+        evidence={"probe": "accounts:signUp", "observed_as": "anon"},
+        poc=f"curl -X POST '{url}' -H 'Content-Type: application/json' -d '{{\"returnSecureToken\":true}}'",
+        remediation=Remediation(
+            summary="Se o cadastro aberto não for desejado, desative os provedores públicos no Firebase Auth "
+            "e não baseie autorização apenas em 'usuário autenticado'.",
+            references=["https://firebase.google.com/docs/auth"]),
     )
 
 

@@ -72,10 +72,19 @@ uv run permiscan recon https://app.exemplo.com --probe-writes --probe-rpc   # Su
 uv run permiscan recon https://app.exemplo.com --format json
 ```
 
+Quando acha um backend, o `recon` já tenta enumerar automaticamente:
+- **Supabase**: tabelas e RPCs pela Data API (como o `scan-api`).
+- **Firebase**: descobre a config (inclusive em `/__/firebase/init.json`), tenta ler coleções
+  comuns do Firestore, listar o bucket de Storage e a leitura anônima do Realtime Database;
+  com `--probe-writes`, testa se o cadastro de usuários (Auth) está aberto.
+
 O relatório unificado traz: stack identificada (com confiança), endpoints descobertos,
-configurações/chaves expostas, findings dos adaptadores (RLS, policies, RTDB…) e
-recomendações. O que exige credencial adicional (DSN do banco, arquivo de regras do Firebase)
-é apontado nas recomendações, não assumido.
+configurações/chaves expostas, findings e recomendações. O que exige credencial adicional
+(DSN do banco, arquivo de regras do Firebase) é apontado nas recomendações, não assumido.
+
+> A descoberta de endpoints compara o corpo da resposta com uma rota inexistente: uma SPA que
+> devolve `index.html` para tudo (200 em qualquer caminho) não gera falso positivo de arquivo
+> exposto.
 
 ### Análise do banco (Supabase/PostgreSQL via conexão direta)
 
@@ -192,6 +201,9 @@ lê apenas o catálogo do sistema; nenhuma linha das suas tabelas é consultada.
 | `firebase-rule-public` | Regra `allow …: if true` (Firestore/Storage) | high (leitura) / critical (escrita) |
 | `firebase-rule-any-authenticated-write` | Escrita exigindo só `request.auth != null`, sem propriedade | medium |
 | `firebase-rtdb-public-read` / `-write` | Realtime Database com `".read"`/`".write": true` | high / critical |
+| `firebase-firestore-public-read` | Coleções do Firestore legíveis por anônimo (recon) | high |
+| `firebase-storage-public-list` | Bucket do Storage com listagem pública (recon) | high |
+| `firebase-auth-signup-open` | Cadastro de usuários aberto no Firebase Auth (recon `--probe-writes`) | medium |
 
 ## Laboratório local
 
