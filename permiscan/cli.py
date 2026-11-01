@@ -244,8 +244,7 @@ def _build_db_adapter(args):
     return PROVIDERS[args.provider](target, roles=args.roles, schemas=args.schemas)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+def dispatch(args) -> int:
     try:
         if args.command in ("check", "scan"):
             adapter = _build_db_adapter(args)
@@ -287,6 +286,14 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_ERROR
 
     return _emit(info, findings, started, finished, args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if not argv:  # sem argumentos: menu interativo
+        from permiscan.menu import run_menu
+        return run_menu()
+    return dispatch(_parser().parse_args(argv))
 
 
 if __name__ == "__main__":

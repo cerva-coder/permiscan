@@ -38,6 +38,29 @@ uv sync
 
 ## Uso
 
+### Menu interativo (sem argumentos)
+
+Rode `permiscan` sem nada e ele pergunta o que fazer, pedindo cada dado na hora:
+
+```sh
+uv run permiscan
+```
+
+```
+=== PermiScan ===
+O que você quer fazer?
+  1) Reconhecimento automático (só uma URL)
+  2) Varredura externa Supabase (Data API)
+  3) Detectar credenciais numa página ou arquivo
+  4) Analisar banco PostgreSQL/Supabase (via DSN)
+  5) Analisar Firebase Security Rules (arquivo)
+  0) Sair
+```
+
+O DSN do banco é pedido sem aparecer na tela. Os testes que alteram o alvo (escrita/RPC) são
+perguntados com "não" como padrão. Os comandos por argumento abaixo continuam disponíveis para
+scripts e CI.
+
 ### Reconhecimento automático (só com a URL)
 
 Identifica a stack, descobre endpoints e credenciais expostas e roteia para as análises
