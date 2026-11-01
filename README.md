@@ -18,7 +18,7 @@ com os **privilégios efetivos** dos papéis que a aplicação expõe.
 | Provedor | Status | O que existe hoje |
 |---|---|---|
 | Supabase (banco) | Análise estática disponível | RLS, policies, privilégios efetivos de `anon`/`authenticated`, views, views materializadas, funções `SECURITY DEFINER`. Validado contra o laboratório local que emula os papéis do Supabase; **ainda não validado contra um projeto Supabase real**. |
-| Supabase (Data API) | Testes dinâmicos disponíveis | Varredura externa com URL + chave anon: descobre tabelas/RPCs pelo OpenAPI e observa o que uma requisição anônima lê. Detecta chave `service_role` no cliente. Somente leitura. |
+| Supabase (Data API) | Testes dinâmicos disponíveis | Varredura externa com URL + chave anon: descobre tabelas/RPCs pelo OpenAPI, observa leitura anônima e, sob flag, testa escrita e chamada de RPC. Detecta chave `service_role` no cliente e extrai credenciais de uma página/bundle (`detect`). |
 | PostgreSQL | Análise estática disponível | Mesmas regras do banco, com papéis e schemas escolhidos pelo usuário, incluindo propriedade de tabela que anula o RLS. Validado em PostgreSQL 17. |
 | Firebase | Análise estática disponível | Security Rules de Firestore, Storage e Realtime Database. Testes dinâmicos com o Emulator: planejados (M6). |
 | Neon, MongoDB Atlas, Appwrite, PocketBase, AWS, GCP | Planejado | Prioridade 2. |
@@ -71,12 +71,43 @@ user = "permiscan_auditor.abcdefghij"
 ### Varredura externa pela Data API do Supabase
 
 Só com a URL do projeto e a chave anon (ambas públicas, embarcadas em qualquer frontend).
-Observa o que uma requisição anônima consegue ler; não escreve nem executa RPC.
+Por padrão observa só o que uma requisição anônima **lê**. Os testes que alteram o alvo são
+flags explícitas e devem ser usados apenas onde você tem autorização.
 
 ```sh
 export PERMISCAN_ANON_KEY='eyJhbGci...'   # chave anon/publishable
+
+# leitura (padrão): tabelas legíveis por anônimo + detecção de chave service_role
 uv run permiscan scan-api --url https://abcdefghij.supabase.co
-uv run permiscan scan-api --url https://abcdefghij.supabase.co --format json --fail-on high
+
+# amostra maior de linhas como evidência
+uv run permiscan scan-api --url https://abcdefghij.supabase.co --rows 20
+
+# testes ativos (alteram o alvo): escrita e chamada de RPC
+uv run permiscan scan-api --url https://abcdefghij.supabase.co --probe-writes --probe-rpc
+
+# também chama RPCs de nome destrutivo (delete/drop/admin/…) — só em projeto próprio/de teste
+uv run permiscan scan-api --url https://abcdefghij.supabase.co --probe-rpc --include-destructive
+```
+
+| Flag | O que faz | Altera o alvo? |
+|---|---|---|
+| (padrão) | lê 1 linha por tabela; detecta `service_role` | não |
+| `--rows N` | lê até N linhas como amostra | não |
+| `--probe-writes` | `POST` para testar escrita anônima | pode inserir linha |
+| `--probe-rpc` | chama RPCs para ver se respondem sem auth | executa a função |
+| `--include-destructive` | inclui RPCs de nome destrutivo em `--probe-rpc` | executa a função |
+
+### Detecção de credenciais em uma página ou bundle
+
+Como a auto-detecção da extensão, mas em um alvo que você indica (uma página ou um arquivo
+local), não varrendo a web. Extrai URLs de projeto e chaves (anon, `service_role`,
+`sb_publishable_`, `sb_secret_`). Com `--scan`, varre cada instância encontrada:
+
+```sh
+uv run permiscan detect --url https://app.exemplo.com
+uv run permiscan detect --file dist/bundle.js
+uv run permiscan detect --url https://app.exemplo.com --scan --probe-writes
 ```
 
 ### Firebase Security Rules
@@ -113,6 +144,9 @@ lê apenas o catálogo do sistema; nenhuma linha das suas tabelas é consultada.
 | `pg-func-secdef-exposed` | Função `SECURITY DEFINER` executável por papéis expostos | medium |
 | `pg-func-search-path` | Função `SECURITY DEFINER` sem `search_path` fixo | medium |
 | `supabase-api-anon-read` | Tabela que retorna dados a uma requisição anônima na Data API | medium–critical (pela sensibilidade das colunas) |
+| `supabase-api-anon-write` | Tabela em que o anônimo consegue escrever (`--probe-writes`) | high–critical |
+| `supabase-api-anon-rpc` | Função RPC que responde sem autenticação (`--probe-rpc`) | pelo nome da função |
+| `supabase-api-rpc-exposed` | RPC de nome destrutivo exposta, não chamada sem `--include-destructive` | info |
 | `supabase-service-role-key` | Chave `service_role` (ignora RLS) usada no cliente | critical |
 | `firebase-rule-public` | Regra `allow …: if true` (Firestore/Storage) | high (leitura) / critical (escrita) |
 | `firebase-rule-any-authenticated-write` | Escrita exigindo só `request.auth != null`, sem propriedade | medium |

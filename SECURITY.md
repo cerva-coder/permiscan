@@ -23,8 +23,9 @@ Não abra issue pública. Use o relato privado de vulnerabilidades do GitHub no 
 
 | Controle | Como |
 |---|---|
-| Alvo explícito | Cada comando recebe o alvo diretamente (DSN, URL ou arquivo). Não há descoberta automática de alvos nem varredura de páginas. |
-| Sem alteração por padrão | A análise do banco é somente leitura; a varredura pela Data API só faz `GET` (lê no máximo 1 linha por tabela, guarda só a contagem e os nomes das colunas). Nenhuma escrita (`POST`/`PATCH`) nem execução de RPC. |
+| Alvo explícito | Cada comando recebe o alvo diretamente (DSN, URL, página ou arquivo). O `detect` extrai credenciais de uma página/arquivo que você indica; não há varredura automática da web. |
+| Somente leitura por padrão | A análise do banco é sempre somente leitura. A Data API, por padrão, só faz `GET`. Os testes que alteram o alvo (`--probe-writes`, `--probe-rpc`) são opt-in e avisam na saída de erro. |
+| RPCs destrutivas protegidas | Em `--probe-rpc`, funções de nome destrutivo (delete/drop/admin/…) não são chamadas sem `--include-destructive`; aparecem no relatório como "não chamada". |
 | Alvo fixado (banco) | `host`/`port`/`dbname` explícitos sobrepõem variáveis `PG*`; `hostaddr`, `service` e múltiplos hosts são recusados. |
 | Somente leitura (banco) | Toda a sessão roda em uma transação `READ ONLY` encerrada com `ROLLBACK`; apenas o catálogo do sistema é consultado. |
 | Timeouts | `connect_timeout`/`statement_timeout` de 10 s/30 s no banco; 15 s por requisição na Data API. |
@@ -63,6 +64,7 @@ somente leitura.
 |---|---|---|
 | Credenciais do alvo | Vazamento em logs, histórico, saída | DSN por ambiente, redação, sem encadeamento de exceções |
 | Alvos de terceiros | Uso contra sistema não autorizado | Allowlist obrigatória; DSN fixado ao alvo validado |
-| Integridade do alvo | Escrita ou carga acidental | Transação `READ ONLY`, timeouts, apenas consultas ao catálogo |
+| Integridade do alvo | Escrita ou carga acidental | Banco: transação `READ ONLY`. Data API: escrita e RPC só sob flag explícita, com aviso; RPCs destrutivas exigem `--include-destructive` |
+| Exposição de dados na evidência | Amostra de linhas em `--rows`/`scan-api` vaza dados do alvo | Padrão lê 1 linha; valores são truncados na evidência; relatórios ficam locais e no `.gitignore` |
 | Relatórios de findings | Exposição do mapa de falhas | Saída local; não versione relatórios (`*.findings.json` no `.gitignore`) |
 | Ferramenta | Falso positivo levando a mudança errada | Privilégios efetivos, nível de confiança explícito, remediação revisável |

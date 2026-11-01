@@ -19,7 +19,10 @@ roda entre `parse_dsn` e `check`. Há dois outros pontos de entrada, com o mesmo
 finding e a mesma saída:
 
 - `scan-api` → `SupabaseApiScanner` (URL + chave anon): lê o OpenAPI do PostgREST, descobre
-  tabelas/RPCs e observa, como anônimo, o que cada tabela retorna. Somente leitura.
+  tabelas/RPCs e observa, como anônimo, o que cada tabela retorna. Leitura por padrão; escrita
+  e chamada de RPC sob flag (`--probe-writes`, `--probe-rpc`), com RPCs destrutivas protegidas.
+- `detect` → `detect_instances` sobre uma página (`--url`) ou arquivo (`--file`): extrai URL e
+  chaves Supabase; com `--scan`, roda o `SupabaseApiScanner` em cada instância encontrada.
 - `scan-rules` → `FirebaseAdapter` (arquivo local): análise textual das Security Rules.
 
 ## Componentes

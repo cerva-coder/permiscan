@@ -47,6 +47,21 @@ Next.js + TypeScript + Tailwind + shadcn/ui, consumindo apenas a API do M1.
 - JSON (já disponível na CLI), HTML, PDF; sumário executivo e relatório técnico.
 - Comparação histórica com `ScanBaseline` usando fingerprints.
 
+## M0.1 — Varredura externa pela Data API e detecção de credenciais ✅
+
+Implementado o fluxo caixa-preta da extensão de referência, apontado a alvos explícitos:
+
+- [x] `scan-api`: OpenAPI do PostgREST → tabelas e RPCs; leitura anônima por tabela.
+- [x] `detect`: extrai URL e chaves (anon, `service_role`, `sb_publishable_`, `sb_secret_`)
+      de uma página (`--url`) ou arquivo (`--file`); `--scan` varre cada instância.
+- [x] Detecção de chave `service_role` em uso no cliente (critical).
+- [x] Testes ativos opt-in: `--probe-writes` (escrita anônima) e `--probe-rpc` (chamada de RPC),
+      com RPCs de nome destrutivo protegidas por `--include-destructive`.
+- [x] Classificação de risco de RPC pelo nome e de sensibilidade por nome de coluna.
+
+Pendente: validar contra um projeto Supabase real; schemas além de `public`; paginação de
+contagem exata; parear chave a projeto por mais do que o `ref` do JWT.
+
 ## M4 — Supabase além do catálogo
 
 - Storage: buckets públicos e policies de `storage.objects`.
@@ -90,12 +105,18 @@ Next.js + TypeScript + Tailwind + shadcn/ui, consumindo apenas a API do M1.
 ## Referência: extensão "Supabase RLS Security Scanner"
 
 Ela faz uma varredura caixa-preta: acha a URL e a chave anon na página e consulta a Data API.
-O PermiScan aproveita a descoberta pelo OpenAPI, a detecção de `service_role` no cliente e a
-classificação de colunas sensíveis. Não copia o que contraria a seção 10 do plano: ler até
-100 linhas e guardá-las, testar escrita com `POST {}` em cada tabela, chamar todas as RPCs
-com `{}` (inclusive as de nome `delete`/`admin`), varrer qualquer site sem escopo e concluir
-"RLS desabilitado" só porque vieram linhas, já que uma policy pública intencional produz o
-mesmo resultado.
+O PermiScan (M0.1) reproduz esse fluxo — descoberta por OpenAPI, leitura anônima, teste de
+escrita, chamada de RPC, detecção de `service_role` e extração de credenciais de página/bundle.
+
+Diferenças deliberadas, para manter a ferramenta útil sem transformá-la em varredor de
+terceiros nem em risco para o próprio alvo:
+
+- O alvo é sempre nomeado pelo usuário (`--url`/`--file`); não há content script varrendo
+  qualquer página automaticamente.
+- Testes que alteram o alvo são opt-in e avisados; RPCs de nome destrutivo exigem flag extra.
+- A evidência é mínima: 1 linha por padrão, valores truncados (a extensão lê e guarda 100).
+- "Legível por anônimo" é descrito como possível exposição a confirmar, não como "RLS
+  desabilitado" categórico — uma policy pública intencional produz o mesmo resultado.
 
 ## M8+ — Prioridade 2
 

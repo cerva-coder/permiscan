@@ -9,7 +9,12 @@ from pathlib import Path
 from permiscan.adapters import PROVIDERS
 from permiscan.adapters.base import AdapterError
 from permiscan.adapters.firebase import FirebaseAdapter
-from permiscan.adapters.supabase_api import SupabaseApiScanner
+from permiscan.adapters.supabase_api import (
+    ApiScanOptions,
+    SupabaseApiScanner,
+    detect_instances,
+    fetch_text,
+)
 from permiscan.findings import Finding, Severity
 from permiscan.scope import ScopeError, authorize, load_scope, parse_dsn
 
@@ -43,12 +48,31 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("check", parents=[db], help="valida conexão com o banco")
     sub.add_parser("scan", parents=[db, report], help="análise estática do catálogo do banco")
 
+    # Modos de prova ativos da Data API, compartilhados por scan-api e detect --scan.
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--rows", type=int, default=1, metavar="N",
+                       help="linhas lidas por tabela como anônimo (padrão: 1)")
+    probe.add_argument("--probe-writes", action="store_true",
+                       help="testa escrita anônima (POST); pode inserir uma linha em tabelas graváveis")
+    probe.add_argument("--probe-rpc", action="store_true",
+                       help="chama funções RPC para ver se respondem sem autenticação")
+    probe.add_argument("--include-destructive", action="store_true",
+                       help="também chama RPCs de nome destrutivo (delete/drop/admin/…)")
+
     # Varredura externa pela Data API do Supabase (URL + chave anon, ambas públicas).
-    api = sub.add_parser("scan-api", parents=[report],
+    api = sub.add_parser("scan-api", parents=[report, probe],
                          help="varredura externa de um projeto Supabase pela Data API")
     api.add_argument("--url", required=True, help="URL do projeto, ex.: https://xxxx.supabase.co")
     api.add_argument("--key-env", default="PERMISCAN_ANON_KEY",
                      help="variável de ambiente com a chave anon (padrão: %(default)s)")
+
+    # Detecção de credenciais em uma página ou bundle (recon da extensão).
+    det = sub.add_parser("detect", parents=[report, probe],
+                         help="extrai URL/chaves Supabase de uma página ou arquivo; com --scan, varre")
+    src = det.add_mutually_exclusive_group(required=True)
+    src.add_argument("--url", help="busca uma página e procura credenciais nela")
+    src.add_argument("--file", type=Path, help="procura credenciais em um arquivo local (HTML, JS, .env)")
+    det.add_argument("--scan", action="store_true", help="varre cada instância detectada pela Data API")
 
     # Firebase Security Rules (arquivo local).
     rules = sub.add_parser("scan-rules", parents=[report],
@@ -114,6 +138,56 @@ def _emit(info: dict, findings: list[Finding], started: datetime, finished: date
     return 0
 
 
+def _options(args) -> ApiScanOptions:
+    return ApiScanOptions(
+        rows=max(1, args.rows), probe_writes=args.probe_writes,
+        probe_rpc=args.probe_rpc, include_destructive=args.include_destructive,
+    )
+
+
+def _probe_warnings(opt: ApiScanOptions) -> None:
+    if opt.probe_writes:
+        print("aviso: --probe-writes pode inserir linhas em tabelas graváveis pelo anon", file=sys.stderr)
+    if opt.include_destructive:
+        print("aviso: --include-destructive chama RPCs de nome destrutivo; use só em alvo próprio/de teste",
+              file=sys.stderr)
+
+
+def _detect(args) -> tuple[dict, list[Finding]]:
+    text = fetch_text(args.url) if args.url else _read_file(args.file)
+    source = args.url or str(args.file)
+    instances = detect_instances(text)
+    if not instances:
+        print(f"nenhuma instância Supabase encontrada em {source}", file=sys.stderr)
+        return {"provider": "supabase-api", "target": source}, []
+
+    for inst in instances:
+        print(f"detectado: {inst.url}", file=sys.stderr)
+        for k in inst.keys:
+            flag = "  <<< service_role (crítico se veio do cliente)" if k["role"] == "service_role" else ""
+            print(f"  chave {k['role']} (ref={k['ref']}): {k['key'][:24]}…{flag}", file=sys.stderr)
+
+    if not args.scan:
+        return {"provider": "supabase-api", "target": source}, []
+
+    opt = _options(args)
+    _probe_warnings(opt)
+    findings: list[Finding] = []
+    for inst in instances:
+        if not inst.anon_key:
+            print(f"aviso: {inst.url} sem chave utilizável; pulando varredura", file=sys.stderr)
+            continue
+        findings += SupabaseApiScanner(inst.url, inst.anon_key, opt).scan()
+    return {"provider": "supabase-api", "target": source}, findings
+
+
+def _read_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise AdapterError(f"não foi possível ler {path}: {e}") from None
+
+
 def _build_db_adapter(args):
     dsn = os.environ.get(args.dsn_env)
     if not dsn:
@@ -135,11 +209,18 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "check":
                 print(json.dumps(info, indent=2, ensure_ascii=False))
                 return 0
+        elif args.command == "detect":
+            started = datetime.now(UTC)
+            info, findings = _detect(args)
+            finished = datetime.now(UTC)
+            return _emit(info, findings, started, finished, args)
         elif args.command == "scan-api":
             key = os.environ.get(args.key_env)
             if not key:
                 raise AdapterError(f"defina a variável de ambiente {args.key_env} com a chave anon")
-            adapter = SupabaseApiScanner(args.url, key)
+            opt = _options(args)
+            _probe_warnings(opt)
+            adapter = SupabaseApiScanner(args.url, key, opt)
             info = adapter.check()
         else:  # scan-rules
             adapter = FirebaseAdapter(args.rules, args.service)
