@@ -11,12 +11,12 @@ def test_parse_uri_and_keyword_dsn():
 
 
 @pytest.mark.parametrize("dsn", [
-    "postgresql:///app",                                    # sem host: PGHOST decidiria o alvo
-    "host=localhost",                                       # sem dbname
-    "host=allowed.example dbname=app hostaddr=10.0.0.9",    # hostaddr contorna o host declarado
+    "postgresql:///app",                                    # no host: PGHOST would decide the target
+    "host=localhost",                                       # no dbname
+    "host=allowed.example dbname=app hostaddr=10.0.0.9",    # hostaddr bypasses the declared host
     "service=prod",
     "host=a,b dbname=app",
-    "não é um dsn",
+    "not a dsn",
 ])
 def test_parse_rejects_ambiguous_targets(dsn):
     with pytest.raises(ScopeError):
@@ -62,8 +62,9 @@ def test_load_scope(tmp_path):
 def test_cli_refuses_out_of_scope_target_before_connecting(tmp_path, monkeypatch, capsys):
     scope = tmp_path / "scope.toml"
     scope.write_text('[[targets]]\nhost = "localhost"\nport = 55432\ndatabase = "lab"\n', encoding="utf-8")
-    # porta 1 nunca responde: se a CLI tentasse conectar, o erro seria de conexão, não de escopo
+    # port 1 never responds: if the CLI tried to connect, the error would be a connection
+    # error, not a scope error
     monkeypatch.setenv("PERMISCAN_DSN", "postgresql://u:s3cret@localhost:1/lab")
     assert main(["scan", "--provider", "supabase", "--scope", str(scope)]) == EXIT_SCOPE
     err = capsys.readouterr().err
-    assert "fora do escopo" in err and "s3cret" not in err
+    assert "outside the authorized scope" in err and "s3cret" not in err

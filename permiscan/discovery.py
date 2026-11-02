@@ -1,11 +1,12 @@
-"""Reconhecimento automático: dada uma URL, identifica a stack, descobre endpoints e
-credenciais expostas e roteia para os adaptadores existentes.
+"""Automatic recon: given a URL, identifies the stack, discovers exposed endpoints and
+credentials, and routes to the existing adapters.
 
-Tudo parte do alvo que o usuário nomeia (`recon <url>`); fazemos apenas requisições GET
-não destrutivas, e a varredura do Supabase herda as mesmas flags opt-in do `scan-api`.
+Everything starts from the target the user names (`recon <url>`); we only make
+non-destructive GET requests, and the Supabase scan inherits the same opt-in flags as
+`scan-api`.
 
-As funções de parsing são puras (texto → sinais) e testáveis sem rede; o acesso HTTP fica
-isolado em `Recon._get`, sobrescrevível nos testes.
+Parsing functions are pure (text → signals) and testable without a network; HTTP access
+is isolated in `Recon._get`, overridable in tests.
 """
 
 import json
@@ -28,7 +29,7 @@ _TIMEOUT = 15
 _MAX_BYTES = 3_000_000
 _MAX_SCRIPTS = 10
 
-# Rotas comuns sondadas com GET; as sensíveis viram finding se expostas.
+# Common routes probed with GET; the sensitive ones become a finding if exposed.
 COMMON_ROUTES = (
     "/rest/v1/", "/auth/v1/health", "/graphql", "/api",
     "/openapi.json", "/swagger.json", "/.env", "/.git/config", "/robots.txt",
@@ -64,11 +65,11 @@ class ReconResult:
     recommendations: list[str] = field(default_factory=list)
 
 
-# --- Detecção de stack (puro) ----------------------------------------------
+# --- Stack detection (pure) --------------------------------------------------
 
 
 def extract_firebase_config(text: str) -> dict:
-    """Puxa os campos do firebaseConfig de objeto JS (apiKey:"x") ou JSON ("apiKey":"x")."""
+    """Pulls firebaseConfig fields from a JS object (apiKey:"x") or JSON ("apiKey":"x")."""
     out = {}
     for key in ("apiKey", "authDomain", "projectId", "databaseURL", "storageBucket",
                 "appId", "messagingSenderId"):
@@ -88,7 +89,7 @@ def _body_sig(body: str) -> tuple[int, str]:
     return len(body), hashlib.sha256(body[:20000].encode("utf-8", "replace")).hexdigest()[:16]
 
 
-# Coleções comuns tentadas na enumeração automática do Firestore.
+# Common collections tried during automatic Firestore enumeration.
 COMMON_COLLECTIONS = (
     "users", "players", "profiles", "accounts", "scores", "scoreboard", "leaderboard",
     "rankings", "ranking", "games", "matches", "items", "inventory", "config", "settings",
@@ -108,16 +109,16 @@ def detect_stacks(text: str, headers: dict | None = None) -> list[StackSignal]:
     fb_ev = [p for p in ("firebaseapp.com", "firebaseio.com", "firebasedatabase.app",
                          "gstatic.com/firebasejs", "firebasestorage") if p in text]
     if extract_firebase_config(text).get("projectId"):
-        sig("firebase", "high", "firebaseConfig no código", *fb_ev)
+        sig("firebase", "high", "firebaseConfig in the code", *fb_ev)
     elif fb_ev:
         sig("firebase", "medium", *fb_ev)
 
     # Supabase
     sb_instances = detect_instances(text)
     if sb_instances:
-        sig("supabase", "high", "URL do projeto + chave no código")
+        sig("supabase", "high", "project URL + key in the code")
     elif any(p in text for p in ("supabase.co", "supabase-js", "createClient(")):
-        sig("supabase", "medium", "SDK/URL do Supabase no código")
+        sig("supabase", "medium", "Supabase SDK/URL in the code")
 
     # Next.js
     nx = [p for p in ("__NEXT_DATA__", "/_next/static") if p in text]
@@ -142,16 +143,16 @@ def detect_stacks(text: str, headers: dict | None = None) -> list[StackSignal]:
     return signals
 
 
-# --- Descoberta de endpoints (puro) ----------------------------------------
+# --- Endpoint discovery (pure) -----------------------------------------------
 
 
 def extract_paths(html: str, base_url: str) -> list[str]:
-    """Caminhos same-origin referenciados no HTML/JS."""
+    """Same-origin paths referenced in the HTML/JS."""
     base = urllib.parse.urlsplit(base_url)
     found = set()
     for m in re.finditer(r"""["'(]\s*(/[A-Za-z0-9._~!$&'()*+,;=:@%/-]{1,200})""", html):
         path = m.group(1)
-        if not path.startswith("//") and "." not in path.rsplit("/", 1)[-1][:1]:  # ignora //cdn e caminhos triviais
+        if not path.startswith("//") and "." not in path.rsplit("/", 1)[-1][:1]:  # skip //cdn and trivial paths
             found.add(path.split("?")[0])
     for m in re.finditer(r"""https?://[^\s"'<>)]+""", html):
         u = urllib.parse.urlsplit(m.group(0))
@@ -172,11 +173,11 @@ def script_srcs(html: str, base_url: str) -> list[str]:
     return out[:_MAX_SCRIPTS]
 
 
-# --- Orquestração (HTTP isolado em _get) ------------------------------------
+# --- Orchestration (HTTP isolated in _get) -----------------------------------
 
 
-# Nível de scan: controla o quão fundo e agressivo o recon vai.
-SCAN_LEVELS = {1: "mínimo (identifica)", 2: "médio (enumera/lê)", 3: "máximo (extrai/ativo)"}
+# Scan level: controls how deep and aggressive the recon goes.
+SCAN_LEVELS = {1: "minimal (identify)", 2: "medium (enumerate/read)", 3: "maximum (extract/active)"}
 
 
 def options_for_level(level: int) -> ApiScanOptions:
@@ -190,7 +191,7 @@ def options_for_level(level: int) -> ApiScanOptions:
 class Recon:
     def __init__(self, url: str, options: ApiScanOptions | None = None, level: int = 2):
         if not url.startswith(("http://", "https://")):
-            raise AdapterError("a URL deve começar com http:// ou https://")
+            raise AdapterError("the URL must start with http:// or https://")
         self.url = url.rstrip("/")
         self.level = level
         self.options = options or options_for_level(level)
@@ -204,15 +205,15 @@ class Recon:
             headers={"User-Agent": "permiscan-recon", "Content-Type": "application/json"}))
 
     def _http(self, req) -> tuple[int, dict, str]:
-        def norm(headers):  # chaves minúsculas: alguns servidores mandam 'content-type' minúsculo
+        def norm(headers):  # lowercase keys: some servers send 'content-type' lowercased
             return {k.lower(): v for k, v in dict(headers).items()}
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310 (esquema validado)
+            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:  # noqa: S310 (scheme validated above)
                 return resp.status, norm(resp.headers), resp.read(_MAX_BYTES).decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
             return e.code, norm(e.headers), e.read(_MAX_BYTES).decode("utf-8", errors="replace")
         except urllib.error.URLError as e:
-            raise AdapterError(f"falha ao buscar {req.full_url}: {e.reason}") from None
+            raise AdapterError(f"failed to fetch {req.full_url}: {e.reason}") from None
 
     def _scan_supabase(self, inst: DetectedInstance) -> list[Finding]:
         return SupabaseApiScanner(inst.url, inst.anon_key, self.options).scan()
@@ -221,7 +222,7 @@ class Recon:
         status, headers, html = self._get(self.url)
         result = ReconResult(self.url)
 
-        # Agrega o HTML e os bundles JS same-origin (onde as chaves costumam estar).
+        # Aggregate the HTML and the same-origin JS bundles (where keys usually live).
         text = html
         for src in script_srcs(html, self.url):
             try:
@@ -233,7 +234,7 @@ class Recon:
 
         result.stacks = detect_stacks(text, headers)
         page_cfg = extract_firebase_config(text)
-        # Se a config não veio da página/bundle, procura em arquivos de runtime do Firebase.
+        # If the config didn't come from the page/bundle, look in Firebase runtime files.
         if not page_cfg.get("projectId"):
             page_cfg = {**self._discover_firebase_config(), **page_cfg}
         result.firebase_config = page_cfg
@@ -245,8 +246,8 @@ class Recon:
         return result
 
     def _discover_endpoints(self, html: str) -> list[Endpoint]:
-        # Baseline: rota aleatória. Numa SPA, todo caminho devolve o MESMO index.html;
-        # comparamos o corpo (não o status/header) para não dar falso positivo.
+        # Baseline: a random route. In an SPA, every path returns the SAME index.html;
+        # we compare the body (not status/headers) to avoid a false positive.
         try:
             _, _, base_body = self._get(f"{self.url}/permiscan-probe-404-xyz")
         except AdapterError:
@@ -258,13 +259,13 @@ class Recon:
                 st, hd, body = self._get(f"{self.url}{route}")
             except AdapterError:
                 continue
-            if _body_sig(body) == base_sig:  # catch-all da SPA: mesmo corpo da baseline
+            if _body_sig(body) == base_sig:  # SPA catch-all: same body as the baseline
                 continue
             ctype = hd.get("content-type", "").split(";")[0]
             endpoints.append(Endpoint(route, st, ctype, is_html=_looks_html(body)))
         return endpoints
 
-    # --- Enumeração automática do Firebase ----------------------------------
+    # --- Automatic Firebase enumeration --------------------------------------
 
     def _discover_firebase_config(self) -> dict:
         for path in ("/__/firebase/init.json", "/config.json", "/firebase-config.json",
@@ -286,10 +287,10 @@ class Recon:
         db = cfg.get("databaseURL")
         if db:
             findings += self._probe_rtdb(db)
-        elif pid:  # tenta a URL padrão de RTDB derivada do projeto
+        elif pid:  # try the default RTDB URL derived from the project
             findings += self._probe_rtdb(f"https://{pid}-default-rtdb.firebaseio.com")
 
-        # Firestore: enumeração de coleções só a partir do nível 2.
+        # Firestore: collection enumeration only from level 2 up.
         if self.level >= 2 and pid and key:
             findings += self._probe_firestore(pid, key)
 
@@ -297,13 +298,13 @@ class Recon:
         if bucket:
             findings += self._probe_storage(bucket)
 
-        # Signup aberto: só no nível 3 (cria um usuário no alvo).
+        # Open signup: level 3 only (creates a user on the target).
         if self.level >= 3 and key:
             findings += self._probe_auth_signup(key)
         return findings
 
     def _probe_firestore(self, project_id: str, api_key: str) -> list[Finding]:
-        page = 5 if self.level >= 3 else 1  # nível 3 extrai mais documentos
+        page = 5 if self.level >= 3 else 1  # level 3 extracts more documents
         found: dict[str, list[str]] = {}
         for col in COMMON_COLLECTIONS:
             url = (f"https://firestore.googleapis.com/v1/projects/{project_id}"
@@ -351,35 +352,35 @@ class Recon:
                 try:
                     findings += self._scan_supabase(inst)
                 except AdapterError as e:
-                    # Se a URL do Supabase for inválida ou a chave não funcionar, não falhar totalmente
+                    # If the Supabase URL is invalid or the key doesn't work, don't fail outright
                     if "getaddrinfo failed" in str(e) or "name resolution" in str(e).lower():
                         findings.append(Finding(
                             rule_id="supabase-invalid-url",
-                            title=f"URL Supabase inválida detectada no código",
-                            description=f"A URL {inst.url} foi detectada no código mas não existe no DNS. Isso indica uma URL de Supabase antiga ou incorreta que foi deixada no código fonte.",
+                            title="Invalid Supabase URL detected in the code",
+                            description=f"The URL {inst.url} was detected in the code but doesn't resolve in DNS. This suggests a stale or incorrect Supabase URL left in the source.",
                             category=Category.STORAGE, provider="supabase-api", resource=inst.url,
                             severity=Severity.MEDIUM, confidence=Confidence.CONFIRMED,
-                            remediation=Remediation(summary="Remova a URL antiga do código fonte ou atualize para a URL correta do projeto Supabase.")
+                            remediation=Remediation(summary="Remove the stale URL from the source, or update it to the correct Supabase project URL.")
                         ))
                     elif "401" in str(e):
-                        # Chave rejeitada - provavelmente a chave não corresponde à URL
+                        # Key rejected - probably doesn't match the URL
                         key_info = f" (ref={inst.keys[0].get('ref')})" if inst.keys and inst.keys[0].get('ref') else ""
                         findings.append(Finding(
                             rule_id="supabase-key-url-mismatch",
-                            title=f"Chave Supabase não corresponde à URL detectada",
-                            description=f"A chave detectada{key_info} foi rejeitada pela URL {inst.url}. Isso pode indicar que a chave é de um projeto diferente da URL, ou que a chave expirou/foi revogada. Para escanear com credenciais corretas, use: permiscan scan-api --url <CORRECT_URL> --key <CORRECT_KEY>",
+                            title="Supabase key doesn't match the detected URL",
+                            description=f"The detected key{key_info} was rejected by {inst.url}. This may mean the key belongs to a different project than the URL, or that it expired/was revoked. To scan with the correct credentials, use: permiscan scan-api --url <CORRECT_URL> --key <CORRECT_KEY>",
                             category=Category.AUTHENTICATION, provider="supabase-api", resource=inst.url,
                             severity=Severity.LOW, confidence=Confidence.POSSIBLE,
-                            remediation=Remediation(summary="Verifique se a chave e a URL correspondem ao mesmo projeto Supabase. Obtenha a chave correta via Supabase Dashboard > Settings > API > anon/public key.")
+                            remediation=Remediation(summary="Check that the key and the URL belong to the same Supabase project. Get the correct key from Supabase Dashboard > Settings > API > anon/public key.")
                         ))
                     else:
                         findings.append(Finding(
                             rule_id="supabase-scan-error",
-                            title=f"Erro ao escanear instância Supabase",
-                            description=f"Tentativa de escanear {inst.url} falhou: {str(e)}",
+                            title="Error scanning a Supabase instance",
+                            description=f"Attempt to scan {inst.url} failed: {str(e)}",
                             category=Category.AUTHORIZATION, provider="supabase-api", resource=inst.url,
                             severity=Severity.INFO, confidence=Confidence.POSSIBLE,
-                            remediation=Remediation(summary="Verifique se a URL e a chave estão corretas.")
+                            remediation=Remediation(summary="Check that the URL and key are correct.")
                         ))
 
         if result.firebase_config.get("projectId") or result.firebase_config.get("databaseURL"):
@@ -389,8 +390,9 @@ class Recon:
             findings.append(_aws_key_finding(key))
 
         for ep in result.endpoints:
-            # Arquivo sensível exposto: só quando o corpo difere do catch-all (já filtrado em
-            # _discover_endpoints) E não é HTML (um index.html de fallback não é um .env real).
+            # Exposed sensitive file: only when the body differs from the catch-all (already
+            # filtered in _discover_endpoints) AND it's not HTML (a fallback index.html
+            # isn't a real .env).
             if ep.path in _SENSITIVE_ROUTES and ep.status == 200 and not ep.is_html:
                 findings.append(_exposed_file_finding(self.url, ep))
 
@@ -401,22 +403,22 @@ class Recon:
             status, headers, body = self._get(f"{db_url.rstrip('/')}/.json?shallow=true")
         except AdapterError:
             return []
-        # RTDB devolve JSON; um 200 com HTML é página de erro/SPA, não dado exposto.
+        # RTDB returns JSON; a 200 with HTML is an error/SPA page, not exposed data.
         if status == 200 and not _looks_html(body) and body.strip() not in ("", "null"):
             keys = re.findall(r'"([^"]+)"\s*:', body)[:20]
             return [Finding(
                 rule_id="firebase-rtdb-public-read",
-                title="Realtime Database legível sem autenticação",
+                title="Realtime Database readable without authentication",
                 description=(
-                    f"{db_url} respondeu a uma leitura anônima (/.json): a regra \".read\" permite acesso "
-                    "sem autenticação e todo o banco fica exposto."
+                    f"{db_url} responded to an anonymous read (/.json): the \".read\" rule allows access "
+                    "without authentication and the entire database is exposed."
                 ),
                 category=Category.AUTHORIZATION, provider="firebase", resource=db_url,
                 severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
                 evidence={"observed_as": "anon", "top_level_keys": keys},
                 poc=f"curl '{db_url.rstrip('/')}/.json?shallow=true'",
                 remediation=Remediation(
-                    summary='Exija autenticação em ".read"/".write" e vincule o acesso ao dono (auth.uid).',
+                    summary='Require authentication on ".read"/".write" and tie access to the owner (auth.uid).',
                     references=["https://firebase.google.com/docs/database/security"]),
             )]
         return []
@@ -425,26 +427,26 @@ class Recon:
         rec = []
         if result.firebase_config.get("projectId") and not result.findings:
             rec.append(
-                "Firebase detectado: as Security Rules não são baixáveis remotamente. Baixe-as "
-                "(firebase deploy/console) e rode `permiscan scan-rules --rules firestore.rules`."
+                "Firebase detected: Security Rules can't be downloaded remotely. Fetch them "
+                "(firebase deploy/console) and run `permiscan scan-rules --rules firestore.rules`."
             )
         if any(s.name == "supabase" for s in result.stacks) and not result.supabase_instances:
-            rec.append("Supabase detectado, mas não achei a chave anon na página; forneça-a em `scan-api --url …`.")
+            rec.append("Supabase detected, but couldn't find the anon key on the page; provide it via `scan-api --url …`.")
         if not result.findings:
-            rec.append("Nenhuma exposição confirmada pela superfície pública. Para o banco, use `scan`/`scan-api` com credenciais.")
+            rec.append("No exposure confirmed from the public surface. For the database, use `scan`/`scan-api` with credentials.")
         return rec
 
 
 def _aws_key_finding(key: str) -> Finding:
     return Finding(
         rule_id="exposed-aws-access-key",
-        title="AWS Access Key ID exposto no cliente",
-        description=f"Uma AWS Access Key ID ({key[:8]}…) aparece no código entregue ao navegador. "
-        "Chaves AWS nunca devem ser embarcadas no frontend.",
+        title="AWS Access Key ID exposed on the client",
+        description=f"An AWS Access Key ID ({key[:8]}…) appears in the code shipped to the browser. "
+        "AWS keys should never be embedded in a frontend.",
         category=Category.AUTHENTICATION, provider="aws", resource=f"aws:{key[:8]}",
         severity=Severity.CRITICAL, confidence=Confidence.CONFIRMED, cwe="CWE-798", owasp="API2:2023",
         evidence={"key_id_prefix": key[:8]},
-        remediation=Remediation(summary="Rotacione a chave imediatamente e mova as credenciais para o servidor.",
+        remediation=Remediation(summary="Rotate the key immediately and move the credentials to the server.",
                                 references=["https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html"]),
     )
 
@@ -457,15 +459,15 @@ def _firestore_finding(project_id: str, found: dict[str, list[str]], level: int)
     cols = list(found)
     sample = {c: docs for c, docs in found.items() if docs}
     desc = (
-        f"As coleções [{', '.join(cols)}] do projeto {project_id} retornaram documentos para uma "
-        "leitura anônima via REST: as Security Rules permitem leitura pública."
+        f"Collections [{', '.join(cols)}] of project {project_id} returned documents for an "
+        "anonymous read over REST: the Security Rules allow public reads."
     )
     if level >= 3 and sample:
         first = next(iter(sample))
-        desc += f" Amostra extraída de '{first}': {', '.join(sample[first][:3])}."
+        desc += f" Sample pulled from '{first}': {', '.join(sample[first][:3])}."
     return Finding(
         rule_id="firebase-firestore-public-read",
-        title="Coleções do Firestore legíveis sem autenticação",
+        title="Firestore collections readable without authentication",
         description=desc,
         category=Category.AUTHORIZATION, provider="firebase", resource=f"firestore:{project_id}",
         severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
@@ -473,35 +475,35 @@ def _firestore_finding(project_id: str, found: dict[str, list[str]], level: int)
         poc=f"curl 'https://firestore.googleapis.com/v1/projects/{project_id}"
         f"/databases/(default)/documents/{cols[0]}?key=$FIREBASE_API_KEY'",
         remediation=Remediation(
-            summary="Exija autenticação e propriedade nas rules "
-            "(ex.: 'allow read: if request.auth != null && request.auth.uid == resource.data.ownerId').",
+            summary="Require authentication and ownership in the rules "
+            "(e.g. 'allow read: if request.auth != null && request.auth.uid == resource.data.ownerId').",
             references=[_FB_DB_DOCS]),
     )
 
 
 def _storage_finding(bucket: str, url: str, names: list[str], level: int) -> Finding:
     desc = (
-        f"O bucket {bucket} respondeu à listagem anônima de objetos: as rules de Storage permitem "
-        "acesso sem autenticação, expondo os arquivos armazenados."
+        f"Bucket {bucket} responded to an anonymous object listing: the Storage rules allow "
+        "access without authentication, exposing the stored files."
     )
     if names:
-        desc += f" {len(names)} arquivo(s) visíveis, ex.: {', '.join(names[:5])}."
+        desc += f" {len(names)} file(s) visible, e.g.: {', '.join(names[:5])}."
     evidence = {"observed_as": "anon", "bucket": bucket, "files": names}
-    if level >= 3 and names:  # extração: URLs de download diretas
+    if level >= 3 and names:  # extraction: direct download URLs
         evidence["download_urls"] = [
             f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{urllib.parse.quote(n, safe='')}?alt=media"
             for n in names[:20]
         ]
     return Finding(
         rule_id="firebase-storage-public-list",
-        title="Firebase Storage com listagem pública",
+        title="Firebase Storage with public listing",
         description=desc,
         category=Category.STORAGE, provider="firebase", resource=f"storage:{bucket}",
         severity=Severity.HIGH, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API1:2023",
         evidence=evidence,
         poc=f"curl '{url}'",
         remediation=Remediation(
-            summary="Exija autenticação nas rules de Storage e vincule o acesso ao dono do arquivo.",
+            summary="Require authentication in the Storage rules and tie access to the file's owner.",
             references=[_FB_STORAGE_DOCS]),
     )
 
@@ -509,19 +511,19 @@ def _storage_finding(bucket: str, url: str, names: list[str], level: int) -> Fin
 def _auth_signup_finding(url: str) -> Finding:
     return Finding(
         rule_id="firebase-auth-signup-open",
-        title="Cadastro de usuários aberto (Firebase Auth)",
+        title="Open user signup (Firebase Auth)",
         description=(
-            "O endpoint de signup do Identity Toolkit criou um usuário sem restrição: qualquer um pode "
-            "se cadastrar e obter um idToken. Combinado com rules que confiam em request.auth != null, "
-            "isso dá acesso a dados 'só para autenticados'."
+            "The Identity Toolkit signup endpoint created a user with no restriction: anyone can "
+            "sign up and get an idToken. Combined with rules that trust request.auth != null, "
+            "this grants access to data meant to be 'authenticated only'."
         ),
         category=Category.AUTHENTICATION, provider="firebase", resource="firebase-auth:signUp",
         severity=Severity.MEDIUM, confidence=Confidence.CONFIRMED, cwe="CWE-284", owasp="API2:2023",
         evidence={"probe": "accounts:signUp", "observed_as": "anon"},
         poc=f"curl -X POST '{url}' -H 'Content-Type: application/json' -d '{{\"returnSecureToken\":true}}'",
         remediation=Remediation(
-            summary="Se o cadastro aberto não for desejado, desative os provedores públicos no Firebase Auth "
-            "e não baseie autorização apenas em 'usuário autenticado'.",
+            summary="If open signup isn't intended, disable the public providers in Firebase Auth "
+            "and don't base authorization solely on 'authenticated user'.",
             references=["https://firebase.google.com/docs/auth"]),
     )
 
@@ -529,12 +531,12 @@ def _auth_signup_finding(url: str) -> Finding:
 def _exposed_file_finding(base_url: str, ep: Endpoint) -> Finding:
     return Finding(
         rule_id="exposed-sensitive-file",
-        title=f"Arquivo sensível acessível publicamente ({ep.path})",
-        description=f"{ep.path} respondeu com HTTP 200 e conteúdo não-HTML: o arquivo pode estar exposto "
-        "ao público, vazando segredos ou histórico do repositório.",
+        title=f"Sensitive file publicly accessible ({ep.path})",
+        description=f"{ep.path} responded with HTTP 200 and non-HTML content: the file may be exposed "
+        "to the public, leaking secrets or repository history.",
         category=Category.STORAGE, provider="http", resource=ep.path,
         severity=Severity.CRITICAL, confidence=Confidence.LIKELY, cwe="CWE-538", owasp="API8:2023",
         evidence={"status": ep.status, "content_type": ep.content_type},
         poc=f"curl -i '{base_url}{ep.path}'",
-        remediation=Remediation(summary="Bloqueie o acesso ao arquivo no servidor/CDN e remova segredos versionados."),
+        remediation=Remediation(summary="Block access to the file on the server/CDN and remove any versioned secrets."),
     )

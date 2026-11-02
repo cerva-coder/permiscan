@@ -1,7 +1,7 @@
 [project]
 name = "permiscan"
 version = "0.1.0"
-description = "Auditoria de controle de acesso e exposição de dados em bancos, BaaS e nuvem"
+description = "Access-control and data-exposure auditing for databases, BaaS backends, and cloud"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

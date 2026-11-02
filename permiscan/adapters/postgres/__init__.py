@@ -16,22 +16,22 @@ class PostgresAdapter(Adapter):
 
     def __init__(self, target: Target, roles: list[str] | None = None, schemas: list[str] | None = None):
         if not roles:
-            raise AdapterError("informe ao menos um papel a auditar (--role)")
+            raise AdapterError("provide at least one role to audit (--role)")
         self.target = target
         self.roles = roles
-        self.schemas = schemas  # None = todos os schemas de usuário
+        self.schemas = schemas  # None = all user schemas
 
     def _session[T](self, work: Callable[[psycopg.Connection], T]) -> T:
         try:
             with psycopg.connect(**self.target.connect_kwargs(), connect_timeout=10, application_name="permiscan") as conn:
-                # Toda a sessão roda em uma única transação READ ONLY, compatível com poolers.
+                # The whole session runs in a single READ ONLY transaction, pooler-compatible.
                 conn.read_only = True
                 conn.execute("SET LOCAL statement_timeout = '30s'")
                 result = work(conn)
                 conn.rollback()
                 return result
         except psycopg.Error as e:
-            # from None: a cadeia da exceção original nunca chega a logs
+            # from None: the original exception chain never reaches the logs
             raise AdapterError(self.target.redact(f"{self.target.label}: {e}".strip())) from None
 
     def _schemas(self, conn: psycopg.Connection) -> list[str]:

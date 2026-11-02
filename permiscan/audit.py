@@ -1,7 +1,7 @@
-"""Auditoria automática de instâncias Supabase em massa.
+"""Automatic bulk auditing of Supabase instances.
 
-Este módulo extrai automaticamente chaves dos sites originais e faz scan completo
-de vulnerabilidades RLS, sem interação do usuário.
+This module automatically extracts keys from the original sites and runs a full
+RLS vulnerability scan, with no user interaction.
 """
 
 import json
@@ -90,67 +90,67 @@ class AuditSummary:
 
 
 def _extract_key_from_url(source_url: str) -> tuple[list[tuple[str, str]], str | None]:
-    """Tenta extrair chaves anon de uma URL do site. Retorna lista de (chave, url_supabase)."""
+    """Tries to extract anon keys from a site's URL. Returns a list of (key, supabase_url)."""
     try:
-        # Baixa HTML + scripts
+        # Download the HTML + scripts
         text = fetch_text(source_url)
         for src in script_srcs(text, source_url):
             try:
                 text += "\n" + fetch_text(src)
             except AdapterError:
                 continue
-        
-        # Detecta instâncias
+
+        # Detect instances
         instances = detect_instances(text)
         if not instances:
             return [], None
-        
-        # Retorna todas as chaves com suas URLs associadas
+
+        # Return every key paired with its URL
         keys = []
         for inst in instances:
             if inst.anon_key:
                 keys.append((inst.anon_key, inst.url))
-        
-        return keys, f"extraido de {source_url}"
+
+        return keys, f"extracted from {source_url}"
     except Exception:
         return [], None
 
 
 def _audit_instance(supabase_url: str, source_url: str | None, options: ApiScanOptions) -> AuditResult:
-    """Audita uma única instância Supabase."""
+    """Audits a single Supabase instance."""
     start = datetime.now(UTC)
     result = AuditResult(supabase_url=supabase_url, source_url=source_url)
-    
+
     try:
-        # Tenta extrair chaves
+        # Try to extract keys
         keys = []
         key_source = None
-        
+
         if source_url:
             keys, key_source = _extract_key_from_url(source_url)
-        
+
         if not keys:
             result.success = False
-            result.error = "chave anon nao encontrada no site de origem"
+            result.error = "anon key not found on the source site"
             result.scan_time = (datetime.now(UTC) - start).total_seconds()
             return result
-        
+
         result.key_found = True
         result.key_source = key_source
-        
-        # Tenta cada chave até encontrar uma que funcione
+
+        # Try each key until one works
         last_error = None
         for key, key_url in keys:
             try:
-                # Faz scan completo
+                # Run a full scan
                 scanner = SupabaseApiScanner(supabase_url, key, options)
                 findings = scanner.scan()
-                
+
                 result.success = True
                 result.findings_count = len(findings)
                 result.findings = [f.model_dump(mode="json") for f in findings]
-                
-                # Conta por severidade
+
+                # Count by severity
                 for f in findings:
                     if f.severity == Severity.CRITICAL:
                         result.critical_count += 1
@@ -162,21 +162,21 @@ def _audit_instance(supabase_url: str, source_url: str | None, options: ApiScanO
                         result.low_count += 1
                     else:
                         result.info_count += 1
-                
+
                 result.scan_time = (datetime.now(UTC) - start).total_seconds()
                 return result
             except AdapterError as e:
                 last_error = str(e)
                 continue
-        
-        # Nenhuma chave funcionou
+
+        # None of the keys worked
         result.success = False
-        result.error = f"todas as chaves falharam. Ultimo erro: {last_error}"
-        
+        result.error = f"all keys failed. Last error: {last_error}"
+
     except Exception as e:
         result.success = False
-        result.error = f"Erro inesperado: {str(e)}"
-    
+        result.error = f"unexpected error: {str(e)}"
+
     result.scan_time = (datetime.now(UTC) - start).total_seconds()
     return result
 
@@ -187,28 +187,28 @@ def audit_supabase_instances(
     max_workers: int = 10,
     progress_callback: callable | None = None,
 ) -> tuple[list[AuditResult], AuditSummary]:
-    """Audita uma lista de instâncias Supabase em paralelo."""
+    """Audits a list of Supabase instances in parallel."""
     options = options or ApiScanOptions(
         rows=1,
-        probe_writes=True,  # Testa escrita automaticamente
-        probe_rpc=True,     # Testa RPC automaticamente
-        include_destructive=False,  # NÃO chama funções destrutivas por padrão
+        probe_writes=True,  # test writes automatically
+        probe_rpc=True,     # test RPC automatically
+        include_destructive=False,  # do NOT call destructive functions by default
     )
-    
+
     results: list[AuditResult] = []
     summary = AuditSummary(total=len(instances))
-    
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_inst = {
             executor.submit(_audit_instance, supabase_url, source_url, options): (supabase_url, source_url)
             for supabase_url, source_url in instances
         }
-        
+
         for future in as_completed(future_to_inst):
             result = future.result()
             results.append(result)
-            
-            # Atualiza summary
+
+            # Update the summary
             if result.success:
                 summary.successful += 1
                 if result.key_found:
@@ -221,32 +221,32 @@ def audit_supabase_instances(
                 summary.info_findings += result.info_count
             else:
                 summary.failed += 1
-            
+
             summary.scan_time += result.scan_time
-            
+
             if progress_callback:
                 progress_callback(len(results), len(instances), result)
-    
+
     results.sort(key=lambda r: r.supabase_url)
     return results, summary
 
 
 def load_instances_from_batch_json(json_path: Path) -> list[tuple[str, str | None]]:
-    """Carrega instâncias Supabase de um JSON gerado pelo comando batch."""
+    """Loads Supabase instances from a JSON file generated by the batch command."""
     data = json.loads(json_path.read_text(encoding="utf-8"))
     instances = []
-    
+
     for r in data.get("results", []):
         if r.get("has_supabase"):
             source_url = r.get("url")
             for supabase_url in r.get("supabase_instances", []):
                 instances.append((supabase_url, source_url))
-    
+
     return instances
 
 
 def load_instances_from_file(path: Path) -> list[tuple[str, str | None]]:
-    """Carrega URLs Supabase de um arquivo (uma por linha)."""
+    """Loads Supabase URLs from a file (one per line)."""
     instances = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -258,7 +258,7 @@ def load_instances_from_file(path: Path) -> list[tuple[str, str | None]]:
 
 
 def save_audit_json(results: list[AuditResult], summary: AuditSummary, output: Path) -> None:
-    """Salva resultados em JSON."""
+    """Saves results to JSON."""
     data = {
         "summary": summary.to_dict(),
         "results": [r.to_dict() for r in results],
@@ -268,7 +268,7 @@ def save_audit_json(results: list[AuditResult], summary: AuditSummary, output: P
 
 
 def print_audit_report(results: list[AuditResult], summary: AuditSummary) -> None:
-    """Imprime relatório de auditoria (rich)."""
+    """Prints the audit report (rich)."""
     from rich.table import Table
 
     from permiscan import report
@@ -277,26 +277,26 @@ def print_audit_report(results: list[AuditResult], summary: AuditSummary) -> Non
     sev = {"critical": summary.critical_findings, "high": summary.high_findings,
            "medium": summary.medium_findings, "low": summary.low_findings, "info": summary.info_findings}
     rows = [
-        ("instâncias", f"{summary.total}  ([green]{summary.successful} ok[/], [red]{summary.failed} falha[/])"),
-        ("chaves encontradas", str(summary.keys_found)),
-        ("tempo", f"{summary.scan_time:.1f}s total · {avg:.2f}s/instância"),
+        ("instances", f"{summary.total}  ([green]{summary.successful} ok[/], [red]{summary.failed} failed[/])"),
+        ("keys found", str(summary.keys_found)),
+        ("time", f"{summary.scan_time:.1f}s total · {avg:.2f}s/instance"),
     ]
     con = report.console()
-    con.print(report.summary_block("Auditoria Supabase (RLS)", rows, sev))
+    con.print(report.summary_block("Supabase audit (RLS)", rows, sev))
 
     vuln = [r for r in results if r.critical_count or r.high_count]
     if vuln:
-        t = Table(title="Instâncias vulneráveis", title_style="bold red", title_justify="left")
-        t.add_column("instância"); t.add_column("crit", justify="right", style="red")
-        t.add_column("high", justify="right", style="dark_orange3"); t.add_column("fonte", style="grey62")
+        t = Table(title="Vulnerable instances", title_style="bold red", title_justify="left")
+        t.add_column("instance"); t.add_column("crit", justify="right", style="red")
+        t.add_column("high", justify="right", style="dark_orange3"); t.add_column("source", style="grey62")
         for r in sorted(vuln, key=lambda r: (-r.critical_count, -r.high_count)):
             t.add_row(r.supabase_url, str(r.critical_count), str(r.high_count), r.source_url or "")
         con.print(t)
 
     failed = [r for r in results if not r.success]
     if failed:
-        t = Table(title=f"Instâncias que falharam ({len(failed)})", title_style="bold", title_justify="left")
-        t.add_column("instância"); t.add_column("erro", style="grey62")
+        t = Table(title=f"Failed instances ({len(failed)})", title_style="bold", title_justify="left")
+        t.add_column("instance"); t.add_column("error", style="grey62")
         for r in failed:
             t.add_row(r.supabase_url, str(r.error))
         con.print(t)

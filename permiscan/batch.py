@@ -1,4 +1,4 @@
-"""Processamento em massa de sites para detecção de Supabase e outras exposições."""
+"""Bulk site processing for Supabase detection and other exposures."""
 
 import json
 import csv
@@ -86,10 +86,10 @@ class BatchSummary:
 
 
 def _scan_site(url: str, options: ApiScanOptions) -> BatchResult:
-    """Scaneia um único site e retorna BatchResult."""
+    """Scans a single site and returns a BatchResult."""
     start = datetime.now(UTC)
     result = BatchResult(url=url)
-    
+
     try:
         recon = Recon(url, options)
         recon_result = recon.run()
@@ -104,8 +104,8 @@ def _scan_site(url: str, options: ApiScanOptions) -> BatchResult:
         result.supabase_instances = [inst.url for inst in recon_result.supabase_instances]
         result.findings_count = len(recon_result.findings)
         result.findings = [f.model_dump(mode="json") for f in recon_result.findings]
-        
-        # Conta por severidade
+
+        # Count by severity
         for f in recon_result.findings:
             if f.severity == Severity.CRITICAL:
                 result.critical_count += 1
@@ -117,14 +117,14 @@ def _scan_site(url: str, options: ApiScanOptions) -> BatchResult:
                 result.low_count += 1
             else:
                 result.info_count += 1
-        
+
     except AdapterError as e:
         result.success = False
         result.error = str(e)
     except Exception as e:
         result.success = False
-        result.error = f"Erro inesperado: {str(e)}"
-    
+        result.error = f"unexpected error: {str(e)}"
+
     result.scan_time = (datetime.now(UTC) - start).total_seconds()
     return result
 
@@ -135,21 +135,21 @@ def scan_batch(
     max_workers: int = 10,
     progress_callback: callable | None = None,
 ) -> tuple[list[BatchResult], BatchSummary]:
-    """Processa uma lista de URLs em paralelo."""
+    """Processes a list of URLs in parallel."""
     options = options or ApiScanOptions()
     results: list[BatchResult] = []
     summary = BatchSummary(total=len(urls))
-    
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submete todos os jobs
+        # Submit every job
         future_to_url = {executor.submit(_scan_site, url, options): url for url in urls}
-        
-        # Coleta resultados conforme completam
+
+        # Collect results as they complete
         for future in as_completed(future_to_url):
             result = future.result()
             results.append(result)
-            
-            # Atualiza summary
+
+            # Update the summary
             if result.success:
                 summary.successful += 1
                 if result.has_supabase:
@@ -166,20 +166,20 @@ def scan_batch(
                 summary.info_findings += result.info_count
             else:
                 summary.failed += 1
-            
+
             summary.scan_time += result.scan_time
-            
-            # Callback de progresso
+
+            # Progress callback
             if progress_callback:
                 progress_callback(len(results), len(urls), result)
-    
-    # Ordena resultados por URL
+
+    # Sort results by URL
     results.sort(key=lambda r: r.url)
     return results, summary
 
 
 def load_urls_from_file(path: Path) -> list[str]:
-    """Carrega URLs de um arquivo (uma por linha)."""
+    """Loads URLs from a file (one per line)."""
     urls = []
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
@@ -191,7 +191,7 @@ def load_urls_from_file(path: Path) -> list[str]:
 
 
 def save_json(results: list[BatchResult], summary: BatchSummary, output: Path) -> None:
-    """Salva resultados em JSON."""
+    """Saves results to JSON."""
     data = {
         "summary": summary.to_dict(),
         "results": [r.to_dict() for r in results],
@@ -201,18 +201,18 @@ def save_json(results: list[BatchResult], summary: BatchSummary, output: Path) -
 
 
 def save_csv(results: list[BatchResult], summary: BatchSummary, output: Path) -> None:
-    """Salva resultados em CSV (resumo por site)."""
+    """Saves results to CSV (per-site summary)."""
     fieldnames = [
         "url", "success", "error", "stacks", "has_supabase", "has_firebase",
         "supabase_instances", "findings_count", "critical_count", "high_count",
         "medium_count", "low_count", "info_count", "scan_time"
     ]
-    
+
     with output.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        
-        # Header com summary
+
+        # Header row with the summary
         writer.writerow({
             "url": "# SUMMARY",
             "success": summary.total,
@@ -229,7 +229,7 @@ def save_csv(results: list[BatchResult], summary: BatchSummary, output: Path) ->
             "info_count": "",
             "scan_time": f"{summary.scan_time:.2f}s",
         })
-        
+
         for r in results:
             writer.writerow({
                 "url": r.url,
@@ -250,7 +250,7 @@ def save_csv(results: list[BatchResult], summary: BatchSummary, output: Path) ->
 
 
 def print_text_report(results: list[BatchResult], summary: BatchSummary) -> None:
-    """Imprime relatório em texto (rich)."""
+    """Prints a text report (rich)."""
     from rich.table import Table
     from rich.text import Text
 
@@ -260,17 +260,17 @@ def print_text_report(results: list[BatchResult], summary: BatchSummary) -> None
     sev = {"critical": summary.critical_findings, "high": summary.high_findings,
            "medium": summary.medium_findings, "low": summary.low_findings, "info": summary.info_findings}
     rows = [
-        ("sites", f"{summary.total}  ([green]{summary.successful} ok[/], [red]{summary.failed} falha[/])"),
+        ("sites", f"{summary.total}  ([green]{summary.successful} ok[/], [red]{summary.failed} failed[/])"),
         ("stacks", f"Supabase: {summary.with_supabase}  ·  Firebase: {summary.with_firebase}"),
-        ("sites c/ findings", str(summary.with_findings)),
-        ("tempo", f"{summary.scan_time:.1f}s total · {avg:.2f}s/site"),
+        ("sites w/ findings", str(summary.with_findings)),
+        ("time", f"{summary.scan_time:.1f}s total · {avg:.2f}s/site"),
     ]
     con = report.console()
-    con.print(report.summary_block("Scan em massa", rows, sev))
+    con.print(report.summary_block("Mass scan", rows, sev))
 
     critical_sites = [r for r in results if r.critical_count > 0]
     if critical_sites:
-        t = Table(title="Sites com findings críticos", title_style="bold red", title_justify="left")
+        t = Table(title="Sites with critical findings", title_style="bold red", title_justify="left")
         t.add_column("site"); t.add_column("crit", justify="right", style="red")
         t.add_column("high", justify="right", style="dark_orange3"); t.add_column("findings")
         for r in critical_sites:
@@ -280,8 +280,8 @@ def print_text_report(results: list[BatchResult], summary: BatchSummary) -> None
 
     failed_sites = [r for r in results if not r.success]
     if failed_sites:
-        t = Table(title=f"Sites que falharam ({len(failed_sites)})", title_style="bold", title_justify="left")
-        t.add_column("site"); t.add_column("erro", style="grey62")
+        t = Table(title=f"Failed sites ({len(failed_sites)})", title_style="bold", title_justify="left")
+        t.add_column("site"); t.add_column("error", style="grey62")
         for r in failed_sites:
             t.add_row(r.url, str(r.error))
         con.print(t)

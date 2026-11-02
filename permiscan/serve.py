@@ -1,11 +1,11 @@
-"""Plataforma web local: dashboard e workspace de exploração sobre o banco de alvos.
+"""Local web platform: dashboard and exploration workspace over the targets database.
 
-Servidor da stdlib (`http.server`), sem framework nem Node. Serve uma página única
-(HTML/JS embutido) que consome uma API JSON lendo o SQLite de `store.py`. Tudo em
-127.0.0.1 — é a sua máquina olhando os seus próprios resultados de scan.
+Stdlib server (`http.server`), no framework, no Node. Serves a single page
+(embedded HTML/JS) that consumes a JSON API reading `store.py`'s SQLite. Everything on
+127.0.0.1 — it's your own machine looking at your own scan results.
 
-Escrita só no banco local (status/notas). O re-scan reexecuta os mesmos probes
-NÃO destrutivos do scanner (nível 2: sem escrita, sem RPC destrutiva).
+Writes only hit the local database (status/notes). Re-scan reruns the scanner's same
+NON-destructive probes (level 2: no writes, no destructive RPC).
 """
 
 import html as _html
@@ -19,25 +19,25 @@ from urllib.parse import urlparse
 
 from permiscan import explore, store
 
-# ponytail: progresso de scan em massa só em memória (dict simples); reinício do servidor
-# perde o job em andamento — aceitável pra ferramenta local de um usuário só.
+# ponytail: mass-scan progress lives only in memory (a plain dict); restarting the server
+# loses an in-progress job — acceptable for a local, single-user tool.
 _JOBS: dict[str, dict] = {}
 
 
 def scan_one(url: str, level: int = 2) -> int:
-    """Scan individual disparado pela web. Retorna o nº de findings."""
+    """Individual scan triggered from the web UI. Returns the number of findings."""
     from permiscan.discovery import Recon
 
     url = url.strip()
     if not url:
-        raise ValueError("informe uma URL")
+        raise ValueError("provide a URL")
     result = Recon(url, level=min(max(level, 1), 3)).run()
     store.enroll(result, source="web-individual")
     return len(result.findings)
 
 
 def start_mass_scan(urls: list[str], level: int = 1) -> str:
-    """Dispara a triagem em massa (mesmo motor do CLI) numa thread e devolve um job_id p/ polling."""
+    """Kicks off the mass triage (the same engine as the CLI) on a thread, returning a job_id to poll."""
     from permiscan.survey import has_resources, next_scan_path, save_survey, survey_many
 
     job_id = uuid.uuid4().hex[:8]
@@ -54,7 +54,7 @@ def start_mass_scan(urls: list[str], level: int = 1) -> str:
             path = next_scan_path()
             save_survey(records, path)
             _JOBS[job_id]["file"] = path.name
-        except Exception as e:  # noqa: BLE001 — job em background: erro vai pro status, não derruba nada
+        except Exception as e:  # noqa: BLE001 — background job: the error goes to its status, nothing crashes
             _JOBS[job_id]["error"] = str(e)
         finally:
             _JOBS[job_id]["finished"] = True
@@ -64,11 +64,11 @@ def start_mass_scan(urls: list[str], level: int = 1) -> str:
 
 
 def rescan(target: dict, level: int = 2) -> int:
-    """Reexecuta os probes não destrutivos para um alvo e reenrola. Retorna o nº de findings."""
+    """Reruns the non-destructive probes for a target and re-enrolls it. Returns the finding count."""
     from permiscan.discovery import Recon, ReconResult, options_for_level
     from permiscan.adapters.supabase_api import DetectedInstance, SupabaseApiScanner
 
-    level = min(level, 2)  # a UI nunca dispara escrita/destrutivo
+    level = min(level, 2)  # the UI never triggers writes/destructive probes
     plat, url, key = target["platform"], target.get("url"), target.get("api_key")
 
     if plat == "supabase" and url and key:
@@ -77,8 +77,13 @@ def rescan(target: dict, level: int = 2) -> int:
                              supabase_instances=[DetectedInstance(url, [{"key": key, "role": "anon",
                                                  "ref": target.get("project_ref")}])])
     elif plat == "firebase":
+        # Reuse the bucket name already confirmed by a previous scan (explore._evidence_by_rule) —
+        # recent Firebase projects use "<project>.firebasestorage.app", not "<project>.appspot.com",
+        # and re-deriving it from project_ref alone silently 404s, dropping the Storage finding.
+        bucket = explore._evidence_by_rule(target, "firebase-storage-public-list").get("bucket")
         cfg = {"projectId": target.get("project_ref"), "apiKey": key,
-               "databaseURL": url if url and "firebaseio" in url else None}
+               "databaseURL": url if url and "firebaseio" in url else None,
+               "storageBucket": bucket}
         r = Recon(url or "https://x.invalid", level=level)
         findings = r._enumerate_firebase({k: v for k, v in cfg.items() if v})
         result = ReconResult(target=url or "", findings=findings, firebase_config=cfg)
@@ -103,29 +108,29 @@ def _handle_api(path: str, method: str, body: dict) -> tuple[int, dict]:
     if parts == ["api", "scan"] and method == "POST":
         try:
             n = scan_one(body.get("url", ""), int(body.get("level", 2)))
-        except Exception as e:  # noqa: BLE001 — erro de scan vira resposta, não 500
+        except Exception as e:  # noqa: BLE001 — a scan error becomes a response, not a 500
             return 502, {"error": str(e)}
         return 200, {"ok": True, "findings": n}
     if parts == ["api", "scan", "mass"] and method == "POST":
         urls = [u.strip() for u in body.get("urls", []) if u and u.strip()]
         if not urls:
-            return 400, {"error": "informe ao menos uma URL"}
+            return 400, {"error": "provide at least one URL"}
         job_id = start_mass_scan(urls, int(body.get("level", 1)))
         return 200, {"job_id": job_id, "total": len(urls)}
     if len(parts) == 4 and parts[:3] == ["api", "scan", "mass"]:
         job = _JOBS.get(parts[3])
-        return (200, job) if job else (404, {"error": "job desconhecido"})
+        return (200, job) if job else (404, {"error": "unknown job"})
     if len(parts) >= 3 and parts[0] == "api" and parts[1] == "targets" and parts[2].isdigit():
         tid = int(parts[2])
         sub = parts[3] if len(parts) > 3 else None
         t = store.get_target(tid)
         if not t:
-            return 404, {"error": "alvo não encontrado"}
+            return 404, {"error": "target not found"}
 
         if sub == "rescan" and method == "POST":
             try:
                 n = rescan(t)
-            except Exception as e:  # noqa: BLE001 — devolve o erro à UI, não derruba o servidor
+            except Exception as e:  # noqa: BLE001 — return the error to the UI, don't crash the server
                 return 502, {"error": str(e)}
             return 200, {"ok": True, "findings": n, "target": store.get_target(tid)}
 
@@ -141,11 +146,11 @@ def _handle_api(path: str, method: str, body: dict) -> tuple[int, dict]:
             return 200, store.get_target(tid)
         if sub is None:
             return 200, t
-    return 404, {"error": "rota desconhecida"}
+    return 404, {"error": "unknown route"}
 
 
 def _live(fn):
-    """Executa uma chamada ao alvo, devolvendo erro de rede como 502 em vez de 500."""
+    """Runs a call against the target, turning a network error into a 502 instead of a 500."""
     from permiscan.adapters.base import AdapterError
     try:
         return 200, fn()
@@ -165,34 +170,40 @@ def _rows(t: dict, body: dict) -> dict:
         return explore.rtdb_get(t, body.get("path", ""), shallow=body.get("shallow", True))
     if kind == "storage":
         return explore.storage_list(t, body.get("prefix", ""), bucket=body.get("bucket"))
-    return {"error": f"tipo desconhecido: {kind}"}
+    return {"error": f"unknown type: {kind}"}
 
 
 def _authz(t: dict, body: dict) -> dict:
     mode = body.get("mode")
     if mode == "write":
         if not body.get("allow_write"):
-            return {"error": "escrita precisa de confirmação explícita (allow_write)"}
+            return {"error": "write requires explicit confirmation (allow_write)"}
         return explore.supabase_write_test(t, body["resource"])
     if mode == "diff":
         return explore.supabase_diff(t, body["resource"],
                                      create_test_user=bool(body.get("create_test_user")))
-    return {"error": f"modo desconhecido: {mode}"}
+    return {"error": f"unknown mode: {mode}"}
 
 
 class _Handler(BaseHTTPRequestHandler):
-    def log_message(self, *a):  # silencia o log por requisição
+    def log_message(self, *a):  # silence the per-request log
         pass
 
-    def _send(self, code: int, body: bytes, ctype: str):
+    def _send(self, code: int, body: bytes, ctype: str, *, no_store: bool = False):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # API responses reflect mutable server state (status, re-scan); without this the
+        # browser can serve a stale GET from cache right after a write, e.g. the page
+        # reloading a target just re-scanned and still showing the old findings.
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def _json(self, code: int, obj: dict):
-        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8", no_store=True)
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -203,7 +214,7 @@ class _Handler(BaseHTTPRequestHandler):
         if m:
             t = store.get_target(int(m.group(1)))
             if not t:
-                self._json(404, {"error": "alvo não encontrado"})
+                self._json(404, {"error": "target not found"})
                 return
             if m.group(2) == "json":
                 body = json.dumps(t, ensure_ascii=False, indent=2).encode("utf-8")
@@ -238,18 +249,18 @@ class _Handler(BaseHTTPRequestHandler):
 def serve(host: str = "127.0.0.1", port: int = 8080, open_browser: bool = True) -> None:
     httpd = ThreadingHTTPServer((host, port), _Handler)
     url = f"http://{host}:{port}"
-    print(f"PermiScan web em {url}  (Ctrl+C para parar)")
+    print(f"PermiScan web at {url}  (Ctrl+C to stop)")
     if open_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nencerrado.")
+        print("\nstopped.")
     finally:
         httpd.server_close()
 
 
-# --- Relatório técnico (HTML pronto para impressão → PDF via navegador) ------
+# --- Technical report (print-ready HTML → PDF via the browser) --------------
 
 
 def report_html(t: dict) -> str:
@@ -260,14 +271,14 @@ def report_html(t: dict) -> str:
     for f in findings:
         ev = f"<pre>{e(json.dumps(f.get('evidence', {}), ensure_ascii=False, indent=2))}</pre>" if f.get("evidence") else ""
         poc = f"<h4>PoC</h4><pre>{e(f['poc'])}</pre>" if f.get("poc") else ""
-        rem = f"<h4>Remediação</h4><p>{e((f.get('remediation') or {}).get('summary', ''))}</p>" if f.get("remediation") else ""
+        rem = f"<h4>Remediation</h4><p>{e((f.get('remediation') or {}).get('summary', ''))}</p>" if f.get("remediation") else ""
         blocks.append(
             f"<div class='f {e(f['severity'])}'><h3>{e(f['title'])} "
             f"<span class='b'>{e(f['severity'])} · {e(f['confidence'])}</span></h3>"
             f"<p class='m'>{e(f['rule_id'])} · {e(f['resource'])}{' · ' + e(f['cwe']) if f.get('cwe') else ''}</p>"
             f"<p>{e(f['description'])}</p>{ev}{poc}{rem}</div>")
-    return f"""<!doctype html><html lang="pt-br"><head><meta charset="utf-8">
-<title>Relatório PermiScan · {e(t['project_ref'] or t['url'] or '')}</title><style>
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>PermiScan Report · {e(t['project_ref'] or t['url'] or '')}</title><style>
 body{{font:14px/1.5 system-ui,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;color:#111}}
 h1{{margin-bottom:4px}}.meta{{color:#555;margin-bottom:20px}}
 .f{{border:1px solid #ddd;border-left-width:4px;border-radius:6px;padding:12px 14px;margin:14px 0;page-break-inside:avoid}}
@@ -279,19 +290,19 @@ pre{{background:#f6f8fa;border:1px solid #e1e4e8;border-radius:6px;padding:8px;o
 white-space:pre-wrap;word-break:break-all;font:12px ui-monospace,monospace}}
 @media print{{a{{display:none}}}}
 </style></head><body>
-<h1>Relatório PermiScan</h1>
+<h1>PermiScan Report</h1>
 <div class="meta">{e(t['platform'])} · <b>{e(t['project_ref'] or '')}</b><br>{e(t['url'] or '')}<br>
-status: {e(t['status'])} · {len(findings)} finding(s) · descoberto {e((t['first_seen'] or '')[:19])}</div>
-{e(t['notes']) and f'<p><b>Anotações:</b> {e(t["notes"])}</p>' or ''}
-{''.join(blocks) or '<p>Sem findings.</p>'}
-<p style="margin-top:30px;color:#999;font-size:12px">Gerado pelo PermiScan · imprima esta página (Ctrl+P) para exportar em PDF.</p>
+status: {e(t['status'])} · {len(findings)} finding(s) · discovered {e((t['first_seen'] or '')[:19])}</div>
+{e(t['notes']) and f'<p><b>Notes:</b> {e(t["notes"])}</p>' or ''}
+{''.join(blocks) or '<p>No findings.</p>'}
+<p style="margin-top:30px;color:#999;font-size:12px">Generated by PermiScan · print this page (Ctrl+P) to export as PDF.</p>
 </body></html>"""
 
 
-# --- Página (SPA de arquivo único, tema escuro, responsiva) ------------------
+# --- Page (single-file SPA, dark theme, responsive) --------------------------
 
 _PAGE = r"""<!doctype html>
-<html lang="pt-br"><head>
+<html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PermiScan</title>
 <style>
@@ -344,7 +355,7 @@ white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,Menlo,Conso
 @media(max-width:560px){th:nth-child(3),td:nth-child(3){display:none}}
 </style></head>
 <body>
-<header><b>PermiScan</b><span class="mut">plataforma de exploração BaaS · local</span>
+<header><b>PermiScan</b><span class="mut">BaaS exploration platform · local</span>
 <button class="right" onclick="route()">↻</button></header>
 <main id="app"></main>
 <script>
@@ -354,13 +365,13 @@ const api=(p,m,b)=>fetch(p,{method:m||'GET',headers:{'Content-Type':'application
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
 const sev=(s)=>`<span class="pill s-${s}">${s}</span>`
 const fmtTs=(iso)=>iso?iso.slice(0,16).replace('T',' '):'—'
-const STATUS=["identificado","vuln_confirmado","parcialmente_exploravel","exploracao_validada","corrigido","arquivado"]
+const STATUS=["identified","vuln_confirmed","partially_exploitable","exploit_validated","fixed","archived"]
 
 async function pollMassScan(jobId,onMsg){
   while(true){
     const j=await api('/api/scan/mass/'+jobId)
-    if(j.error){onMsg('erro: '+j.error,true);return}
-    onMsg(`${j.done}/${j.total} site(s) · ${j.found} com recursos`,j.finished,j.done/Math.max(1,j.total))
+    if(j.error){onMsg('error: '+j.error,true);return}
+    onMsg(`${j.done}/${j.total} site(s) · ${j.found} with resources`,j.finished,j.done/Math.max(1,j.total))
     if(j.finished)return
     await new Promise(r=>setTimeout(r,1200))
   }
@@ -370,23 +381,23 @@ async function dashboard(){
   const [st,{targets}]=await Promise.all([api('/api/stats'),api('/api/targets')])
   const app=document.getElementById('app');app.innerHTML=''
   app.append($(`<div class="grid">
-    <div class="card"><h3>Alvos</h3><div class="big">${st.targets}</div></div>
-    <div class="card"><h3>Vuln. confirmadas</h3><div class="big" style="color:var(--crit)">${st.confirmed_targets}</div></div>
+    <div class="card"><h3>Targets</h3><div class="big">${st.targets}</div></div>
+    <div class="card"><h3>Confirmed vulns</h3><div class="big" style="color:var(--crit)">${st.confirmed_targets}</div></div>
     <div class="card"><h3>Findings</h3><div class="big">${st.findings}</div></div>
-    <div class="card"><h3>Plataformas</h3><div>${Object.entries(st.by_platform).map(([k,v])=>`<span class="tag">${k}: ${v}</span>`).join(' ')||'—'}</div></div>
+    <div class="card"><h3>Platforms</h3><div>${Object.entries(st.by_platform).map(([k,v])=>`<span class="tag">${k}: ${v}</span>`).join(' ')||'—'}</div></div>
   </div>`))
 
-  // --- Novo scan, tudo pela web (sem CLI) ---
+  // --- New scan, all from the web (no CLI needed) ---
   const scanCard=$(`<div class="card" style="margin-top:12px">
-    <h3>Novo scan</h3>
+    <h3>New scan</h3>
     <div class="row">
-      <input id="su" placeholder="https://alvo.com" style="flex:1;min-width:200px">
-      <select id="sl" title="nível"><option value="1">nível 1 · mínimo</option><option value="2" selected>nível 2 · médio</option><option value="3">nível 3 · máximo</option></select>
-      <button class="pri" id="sgo">scanear</button>
-      <button id="smass">scan em massa…</button>
+      <input id="su" placeholder="https://target.com" style="flex:1;min-width:200px">
+      <select id="sl" title="level"><option value="1">level 1 · minimal</option><option value="2" selected>level 2 · medium</option><option value="3">level 3 · maximum</option></select>
+      <button class="pri" id="sgo">scan</button>
+      <button id="smass">mass scan…</button>
     </div>
-    <textarea id="smurls" class="hide" placeholder="uma URL por linha" style="width:100%;min-height:70px;margin-top:8px"></textarea>
-    <div class="row hide" id="smrow"><button class="pri" id="smgo">rodar scan em massa</button></div>
+    <textarea id="smurls" class="hide" placeholder="one URL per line" style="width:100%;min-height:70px;margin-top:8px"></textarea>
+    <div class="row hide" id="smrow"><button class="pri" id="smgo">run mass scan</button></div>
     <div id="smsg" class="mut" style="margin-top:6px"></div>
     <div class="bar hide" id="sbar"><i style="width:0%"></i></div>
   </div>`)
@@ -399,10 +410,10 @@ async function dashboard(){
   scanCard.querySelector('#sgo').onclick=async(e)=>{
     const url=scanCard.querySelector('#su').value.trim()
     if(!url)return
-    e.target.disabled=true;smsg.textContent='scaneando…'
+    e.target.disabled=true;smsg.textContent='scanning…'
     const res=await api('/api/scan','POST',{url,level:+scanCard.querySelector('#sl').value})
     e.target.disabled=false
-    smsg.textContent=res.error?('erro: '+res.error):`ok · ${res.findings} finding(s)`
+    smsg.textContent=res.error?('error: '+res.error):`ok · ${res.findings} finding(s)`
     if(!res.error)dashboard()
   }
   scanCard.querySelector('#smgo').onclick=async(e)=>{
@@ -410,18 +421,18 @@ async function dashboard(){
     if(!urls.length)return
     e.target.disabled=true;sbar.classList.remove('hide');sbar.querySelector('i').style.width='0%'
     const res=await api('/api/scan/mass','POST',{urls,level:+scanCard.querySelector('#sl').value})
-    if(res.error){smsg.textContent='erro: '+res.error;e.target.disabled=false;return}
+    if(res.error){smsg.textContent='error: '+res.error;e.target.disabled=false;return}
     await pollMassScan(res.job_id,(txt,done,frac)=>{
       smsg.textContent=txt;sbar.querySelector('i').style.width=(100*(frac||0))+'%'
       if(done){e.target.disabled=false;sbar.classList.add('hide');dashboard()}
     })
   }
 
-  const bar=$(`<div class="row"><input id="q" placeholder="filtrar por url/ref…" style="flex:1;min-width:160px">
-    <select id="fp"><option value="">plataforma</option><option>supabase</option><option>firebase</option><option>site</option></select>
+  const bar=$(`<div class="row"><input id="q" placeholder="filter by url/ref…" style="flex:1;min-width:160px">
+    <select id="fp"><option value="">platform</option><option>supabase</option><option>firebase</option><option>site</option></select>
     <select id="fs"><option value="">status</option>${STATUS.map(s=>`<option>${s}</option>`).join('')}</select>
-    <label class="mut"><input type="checkbox" id="fc"> só crít./alto</label>
-    <select id="so"><option value="recent">mais recentes</option><option value="findings">mais findings</option><option value="sev">mais graves</option></select></div>`)
+    <label class="mut"><input type="checkbox" id="fc"> crit./high only</label>
+    <select id="so"><option value="recent">most recent</option><option value="findings">most findings</option><option value="sev">most severe</option></select></div>`)
   app.append(bar)
   const wrap=$('<div></div>');app.append(wrap)
   const draw=()=>{
@@ -433,19 +444,19 @@ async function dashboard(){
     rows=[...rows].sort((a,b)=>so==='findings'?b.findings-a.findings:
       so==='sev'?((b.crit||0)*10+(b.high||0))-((a.crit||0)*10+(a.high||0)):
       (b.last_seen||'').localeCompare(a.last_seen||''))
-    wrap.innerHTML=rows.length?`<div class="tblwrap"><table><thead><tr><th>alvo</th><th>plataforma</th><th>status</th><th>crít/alto</th><th>findings</th><th>visto</th></tr></thead><tbody>
+    wrap.innerHTML=rows.length?`<div class="tblwrap"><table><thead><tr><th>target</th><th>platform</th><th>status</th><th>crit/high</th><th>findings</th><th>seen</th></tr></thead><tbody>
       ${rows.map(t=>`<tr class="clk" onclick="location.hash='#/t/${t.id}'">
         <td><b>${esc(t.project_ref||t.url)}</b><br><span class="mut">${esc(t.url||'')}</span></td>
         <td><span class="tag">${t.platform}</span></td><td>${esc(t.status)}</td>
         <td>${t.crit?`<span class="pill s-critical">${t.crit}</span> `:''}${t.high?`<span class="pill s-high">${t.high}</span>`:''}</td>
         <td>${t.findings}</td><td class="mut">${fmtTs(t.last_seen)}</td></tr>`).join('')}
-      </tbody></table></div>`:'<p class="mut">Nenhum alvo ainda. Rode um scan acima para popular.</p>'
+      </tbody></table></div>`:'<p class="mut">No targets yet. Run a scan above to populate this.</p>'
   }
   draw();bar.querySelectorAll('input,select').forEach(e=>e.oninput=draw)
 }
 
 const rowsTable=(rows)=>{
-  if(!rows||!rows.length)return '<p class="mut">0 registros.</p>'
+  if(!rows||!rows.length)return '<p class="mut">0 records.</p>'
   const cols=[...new Set(rows.flatMap(r=>Object.keys(r)))].slice(0,14)
   const cell=(v)=>esc(v&&typeof v==='object'?JSON.stringify(v):v)
   return `<div class="tblwrap"><table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>
@@ -453,64 +464,64 @@ const rowsTable=(rows)=>{
 }
 
 const filesTable=(files)=>{
-  if(!files.length)return '<p class="mut">pasta vazia.</p>'
-  return `<div class="tblwrap"><table><thead><tr><th>arquivo</th><th>tamanho</th><th>tipo</th><th>atualizado</th><th></th></tr></thead><tbody>
+  if(!files.length)return '<p class="mut">empty folder.</p>'
+  return `<div class="tblwrap"><table><thead><tr><th>file</th><th>size</th><th>type</th><th>updated</th><th></th></tr></thead><tbody>
     ${files.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.size)}</td><td>${esc(f.contentType)}</td>
-      <td>${esc(fmtTs(f.updated))}</td><td><a href="${esc(f.url)}" target="_blank" rel="noopener">abrir</a></td></tr>`).join('')}
+      <td>${esc(fmtTs(f.updated))}</td><td><a href="${esc(f.url)}" target="_blank" rel="noopener">open</a></td></tr>`).join('')}
     </tbody></table></div>`
 }
 
 async function workspace(id){
   const t=await api('/api/targets/'+id)
   const app=document.getElementById('app');app.innerHTML=''
-  if(t.error){app.innerHTML=`<p>${esc(t.error)}</p><a href="#/">← voltar</a>`;return}
-  app.append($(`<div class="row"><a href="#/">← alvos</a>
-    <span class="right mut">visto ${esc((t.last_seen||'').slice(0,19).replace('T',' '))}</span></div>`))
+  if(t.error){app.innerHTML=`<p>${esc(t.error)}</p><a href="#/">← back</a>`;return}
+  app.append($(`<div class="row"><a href="#/">← targets</a>
+    <span class="right mut">seen ${esc((t.last_seen||'').slice(0,19).replace('T',' '))}</span></div>`))
   app.append($(`<div class="card"><div class="row" style="margin:0">
     <div><h3>${esc(t.platform)} · ${esc(t.project_ref||'')}</h3>
     <div><a href="${esc(t.url||'#')}" target="_blank" rel="noopener">${esc(t.url||'')}</a></div>
-    ${t.api_key?`<div class="mut">chave: ${esc(t.api_key.slice(0,18))}…</div>`:'<div class="mut">sem chave pública armazenada</div>'}</div>
+    ${t.api_key?`<div class="mut">key: ${esc(t.api_key.slice(0,18))}…</div>`:'<div class="mut">no public key stored</div>'}</div>
     <div class="right"><button class="pri" id="rescan">re-scan (read-only)</button></div></div>
     <div class="row" style="margin:10px 0 0"><label class="mut">status</label>
       <select id="status">${STATUS.map(s=>`<option ${s==t.status?'selected':''}>${s}</option>`).join('')}</select>
-      <button id="save">salvar</button><span id="msg" class="mut"></span></div></div>`))
+      <button id="save">save</button><span id="msg" class="mut"></span></div></div>`))
 
-  const tabs=["Evidências","Explorar","Testes de autorização","Relatório"]
+  const tabs=["Evidence","Explore","Authorization tests","Report"]
   const bar=$(`<div class="row" style="margin:16px 0 4px">${tabs.map((n,i)=>`<button class="tab" data-i="${i}">${n}</button>`).join('')}</div>`)
   app.append(bar);const pane=$('<div></div>');app.append(pane)
 
   const msg=document.getElementById('msg')
   document.getElementById('save').onclick=async()=>{
-    msg.textContent='salvando…'
+    msg.textContent='saving…'
     await api('/api/targets/'+id,'POST',{status:document.getElementById('status').value,notes:document.getElementById('notes').value})
-    msg.textContent='salvo ✓';setTimeout(()=>msg.textContent='',1500)
+    msg.textContent='saved ✓';setTimeout(()=>msg.textContent='',1500)
   }
   document.getElementById('rescan').onclick=async(e)=>{
     e.target.disabled=true;e.target.textContent='re-scanning…'
     const res=await api('/api/targets/'+id+'/rescan','POST')
-    if(res.error)msg.textContent='erro: '+res.error
+    if(res.error)msg.textContent='error: '+res.error
     workspace(id)
   }
 
-  function paneEvidencias(){
-    pane.innerHTML=`<h3 class="mut">Findings & evidências (${t.findings.length})</h3>`
+  function paneEvidence(){
+    pane.innerHTML=`<h3 class="mut">Findings & evidence (${t.findings.length})</h3>`
     t.findings.forEach(f=>{
-      const ev=f.evidence&&Object.keys(f.evidence).length?`<div class="mut" style="margin-top:6px">evidência</div><pre>${esc(JSON.stringify(f.evidence,null,2))}</pre>`:''
-      const poc=f.poc?`<div class="mut" style="margin-top:6px">PoC reproduzível</div><pre>${esc(f.poc)}</pre>`:''
+      const ev=f.evidence&&Object.keys(f.evidence).length?`<div class="mut" style="margin-top:6px">evidence</div><pre>${esc(JSON.stringify(f.evidence,null,2))}</pre>`:''
+      const poc=f.poc?`<div class="mut" style="margin-top:6px">Reproducible PoC</div><pre>${esc(f.poc)}</pre>`:''
       pane.append($(`<div class="find sev-${f.severity}">
         <div class="row" style="margin:0"><h4>${esc(f.title)}</h4><span class="right">${sev(f.severity)} <span class="tag">${esc(f.confidence)}</span></span></div>
         <div class="mut">${esc(f.rule_id)} · ${esc(f.resource)} ${f.cwe?'· '+esc(f.cwe):''}</div>
         <div class="desc">${esc(f.description)}</div>${ev}${poc}
-        ${f.remediation?`<div class="mut" style="margin-top:6px">remediação</div><div class="desc">${esc(f.remediation.summary)}</div>`:''}</div>`))
+        ${f.remediation?`<div class="mut" style="margin-top:6px">remediation</div><div class="desc">${esc(f.remediation.summary)}</div>`:''}</div>`))
     })
-    pane.append($(`<div class="card" style="margin-top:14px"><h3>Histórico</h3>
+    pane.append($(`<div class="card" style="margin-top:14px"><h3>History</h3>
       <ul class="hist">${t.activity.map(a=>`<li>${esc(a.ts.slice(0,19).replace('T',' '))} · ${esc(a.kind)} — ${esc(a.detail||'')}</li>`).join('')||'<li>—</li>'}</ul></div>`))
-    pane.append($(`<div class="card" style="margin-top:14px"><h3>Anotações</h3>
+    pane.append($(`<div class="card" style="margin-top:14px"><h3>Notes</h3>
       <textarea id="notes" style="width:100%;min-height:80px">${esc(t.notes||'')}</textarea></div>`))
   }
 
-  async function paneExplorar(){
-    pane.innerHTML='<p class="mut">carregando recursos…</p>'
+  async function paneExplore(){
+    pane.innerHTML='<p class="mut">loading resources…</p>'
     const r=await api('/api/targets/'+id+'/resources')
     if(r.error){pane.innerHTML=`<p class="mut">${esc(r.error)}</p>`;return}
     pane.innerHTML=''
@@ -518,27 +529,27 @@ async function workspace(id){
     if(r.kind==='supabase'){
       const out=$('<div style="margin-top:8px"></div>')
       const chips=$(`<div class="chips">${r.tables.map(t=>`<span class="chip" data-t="${esc(t)}">${esc(t)}</span>`).join('')}</div>`)
-      pane.append($(`<div class="card"><h3>Tabelas <span class="mut" style="font-weight:400">· clique para navegar</span></h3></div>`))
+      pane.append($(`<div class="card"><h3>Tables <span class="mut" style="font-weight:400">· click to navigate</span></h3></div>`))
       pane.lastChild.append(chips)
       pane.append($(`<div class="card" style="margin-top:10px">
         <div class="row"><select id="tbl" style="flex:1">${r.tables.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
-        <input id="sel" value="*" title="colunas (select)" style="width:110px">
-        <input id="ord" placeholder="order (ex: id.desc)" style="width:140px">
+        <input id="sel" value="*" title="columns (select)" style="width:110px">
+        <input id="ord" placeholder="order (e.g. id.desc)" style="width:140px">
         <input id="lim" type="number" value="50" style="width:70px"><input id="off" type="number" value="0" style="width:70px"></div>
-        <div class="row"><input id="fc" placeholder="coluna (opcional)"><select id="fo">${["eq","neq","gt","gte","lt","lte","like","ilike","is","in"].map(o=>`<option>${o}</option>`).join('')}</select>
-        <input id="fv" placeholder="valor"><button class="pri" id="go">consultar</button></div>
-        ${r.rpcs.length?`<div class="mut" style="margin-top:8px">RPCs expostas (chame só na aba "Testes de autorização"): ${
+        <div class="row"><input id="fc" placeholder="column (optional)"><select id="fo">${["eq","neq","gt","gte","lt","lte","like","ilike","is","in"].map(o=>`<option>${o}</option>`).join('')}</select>
+        <input id="fv" placeholder="value"><button class="pri" id="go">query</button></div>
+        ${r.rpcs.length?`<div class="mut" style="margin-top:8px">Exposed RPCs (only call them from the "Authorization tests" tab): ${
           r.rpcs.map(x=>`<span class="tag">${esc(x.name)} · ${esc(x.risk)}</span>`).join(' ')}</div>`:''}</div>`))
       pane.append(out)
       const run=async()=>{
-        out.innerHTML='<p class="mut">consultando…</p>'
+        out.innerHTML='<p class="mut">querying…</p>'
         const fc=document.getElementById('fc').value
         const filters=fc?[{col:fc,op:document.getElementById('fo').value,val:document.getElementById('fv').value}]:[]
         const res=await api('/api/targets/'+id+'/rows','POST',{type:'supabase_table',resource:document.getElementById('tbl').value,
           select:document.getElementById('sel').value,order:document.getElementById('ord').value||null,
           limit:+document.getElementById('lim').value,offset:+document.getElementById('off').value,filters})
-        out.innerHTML=res.error?`<p class="mut">erro: ${esc(res.error)}</p>`:
-          `<div class="mut">${res.count!=null?res.count+' no total':''}</div>`+rowsTable(res.rows)
+        out.innerHTML=res.error?`<p class="mut">error: ${esc(res.error)}</p>`:
+          `<div class="mut">${res.count!=null?res.count+' total':''}</div>`+rowsTable(res.rows)
       }
       chips.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{
         chips.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));c.classList.add('on')
@@ -547,85 +558,85 @@ async function workspace(id){
       document.getElementById('go').onclick=run
       document.getElementById('tbl').onchange=run
       if(chips.firstChild)chips.firstChild.classList.add('on')
-      run()  // primeira tabela já carrega sozinha — nada pra digitar
+      run()  // the first table loads on its own — nothing to type
       return
     }
 
-    if(r.kind!=='firebase'){pane.innerHTML='<p class="mut">Este alvo não tem recurso explorável (sem chave pública salva).</p>';return}
+    if(r.kind!=='firebase'){pane.innerHTML='<p class="mut">This target has no explorable resource (no public key saved).</p>';return}
     if(!r.collections.length && !r.rtdb && !r.bucket){
-      pane.innerHTML='<p class="mut">Nenhuma coleção, RTDB ou bucket confirmados como públicos neste alvo ainda.</p>';return
+      pane.innerHTML='<p class="mut">No collection, RTDB or bucket confirmed public on this target yet.</p>';return
     }
 
-    // --- Firestore: coleções confirmadas primeiro (sólidas), sugestões por nome comum depois ---
+    // --- Firestore: confirmed collections first (solid), common-name guesses after ---
     const allCols=[...r.collections.map(c=>({name:c,sugg:false})),...r.collections_suggested.map(c=>({name:c,sugg:true}))]
     if(allCols.length){
       const outFs=$('<div style="margin-top:8px"></div>')
-      const chips=$(`<div class="chips">${allCols.map(c=>`<span class="chip${c.sugg?' sugg':''}" data-c="${esc(c.name)}" title="${c.sugg?'não confirmada — tentativa':'confirmada no scan'}">${esc(c.name)}</span>`).join('')}</div>`)
-      pane.append($(`<div class="card"><h3>Firestore</h3><div class="mut">clique numa coleção para ler os documentos ${r.collections.length?'':'(nenhuma confirmada — tentando nomes comuns)'}</div></div>`))
+      const chips=$(`<div class="chips">${allCols.map(c=>`<span class="chip${c.sugg?' sugg':''}" data-c="${esc(c.name)}" title="${c.sugg?'not confirmed — a guess':'confirmed by the scan'}">${esc(c.name)}</span>`).join('')}</div>`)
+      pane.append($(`<div class="card"><h3>Firestore</h3><div class="mut">click a collection to read its documents ${r.collections.length?'':'(none confirmed — trying common names)'}</div></div>`))
       pane.lastChild.append(chips);pane.append(outFs)
       const loadCol=(name)=>{
         chips.querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x.dataset.c===name))
-        outFs.innerHTML='<p class="mut">carregando…</p>'
+        outFs.innerHTML='<p class="mut">loading…</p>'
         api('/api/targets/'+id+'/rows','POST',{type:'firestore',resource:name}).then(res=>{
-          outFs.innerHTML=res.error?`<p class="mut">erro: ${esc(res.error)}</p>`:`<div class="mut">${res.count} documento(s)</div>`+rowsTable(res.rows)
+          outFs.innerHTML=res.error?`<p class="mut">error: ${esc(res.error)}</p>`:`<div class="mut">${res.count} document(s)</div>`+rowsTable(res.rows)
         })
       }
       chips.querySelectorAll('.chip').forEach(c=>c.onclick=()=>loadCol(c.dataset.c))
-      loadCol(allCols[0].name)  // auto-abre a primeira
+      loadCol(allCols[0].name)  // auto-opens the first one
     }
 
-    // --- Realtime Database: navega por chaves (shallow), sem precisar digitar caminho ---
+    // --- Realtime Database: navigate by key (shallow), no path to type ---
     if(r.rtdb){
       let path=[]
       const outRt=$('<div style="margin-top:8px"></div>')
       pane.append($(`<div class="card" style="margin-top:10px"><h3>Realtime Database</h3></div>`))
       pane.lastChild.append(outRt)
       const loadRt=async()=>{
-        outRt.innerHTML='<p class="mut">carregando…</p>'
+        outRt.innerHTML='<p class="mut">loading…</p>'
         const res=await api('/api/targets/'+id+'/rows','POST',{type:'rtdb',path:path.join('/'),shallow:true})
-        if(res.error){outRt.innerHTML=`<p class="mut">erro: ${esc(res.error)}</p>`;return}
-        const crumbs=`<div class="crumbs"><a data-i="-1">raiz</a>${path.map((p,i)=>` / <a data-i="${i}">${esc(p)}</a>`).join('')}</div>`
+        if(res.error){outRt.innerHTML=`<p class="mut">error: ${esc(res.error)}</p>`;return}
+        const crumbs=`<div class="crumbs"><a data-i="-1">root</a>${path.map((p,i)=>` / <a data-i="${i}">${esc(p)}</a>`).join('')}</div>`
         const data=res.data,keys=data&&typeof data==='object'?Object.keys(data):null
-        const body=keys?(keys.length?`<div class="chips">${keys.map(k=>`<span class="chip folder" data-k="${esc(k)}">${esc(k)}</span>`).join('')}</div>`:'<p class="mut">nó vazio.</p>')
+        const body=keys?(keys.length?`<div class="chips">${keys.map(k=>`<span class="chip folder" data-k="${esc(k)}">${esc(k)}</span>`).join('')}</div>`:'<p class="mut">empty node.</p>')
           :`<pre>${esc(JSON.stringify(data))}</pre>`
         outRt.innerHTML=crumbs+body
         outRt.querySelectorAll('.crumbs a').forEach(a=>a.onclick=()=>{path=path.slice(0,+a.dataset.i+1);loadRt()})
         outRt.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{path=[...path,c.dataset.k];loadRt()})
       }
-      loadRt()  // raiz carrega sozinha
+      loadRt()  // root loads on its own
     }
 
-    // --- Storage: pastas (prefixes) e arquivos navegáveis, sem digitar prefixo ---
+    // --- Storage: navigable folders (prefixes) and files, no prefix to type ---
     if(r.bucket){
       let prefix=''
       const outSt=$('<div style="margin-top:8px"></div>')
       pane.append($(`<div class="card" style="margin-top:10px"><h3>Storage · ${esc(r.bucket)}</h3></div>`))
       pane.lastChild.append(outSt)
       const loadSt=async()=>{
-        outSt.innerHTML='<p class="mut">carregando…</p>'
+        outSt.innerHTML='<p class="mut">loading…</p>'
         const res=await api('/api/targets/'+id+'/rows','POST',{type:'storage',prefix,bucket:r.bucket})
-        if(res.error){outSt.innerHTML=`<p class="mut">erro: ${esc(res.error)}</p>`;return}
+        if(res.error){outSt.innerHTML=`<p class="mut">error: ${esc(res.error)}</p>`;return}
         const segs=prefix?prefix.split('/'):[]
-        const crumbs=`<div class="crumbs"><a data-p="">raiz</a>${segs.map((s,i)=>` / <a data-p="${esc(segs.slice(0,i+1).join('/'))}">${esc(s)}</a>`).join('')}</div>`
+        const crumbs=`<div class="crumbs"><a data-p="">root</a>${segs.map((s,i)=>` / <a data-p="${esc(segs.slice(0,i+1).join('/'))}">${esc(s)}</a>`).join('')}</div>`
         const folders=res.prefixes.length?`<div class="chips">${res.prefixes.map(p=>`<span class="chip folder" data-p="${esc(p)}">${esc(p.split('/').pop())}</span>`).join('')}</div>`:''
         outSt.innerHTML=crumbs+folders+filesTable(res.rows)
         outSt.querySelectorAll('.crumbs a').forEach(a=>a.onclick=()=>{prefix=a.dataset.p;loadSt()})
         outSt.querySelectorAll('.chip.folder').forEach(c=>c.onclick=()=>{prefix=c.dataset.p;loadSt()})
       }
-      loadSt()  // raiz do bucket carrega sozinha
+      loadSt()  // the bucket root loads on its own
     }
   }
 
   async function paneAuthz(){
-    if(t.platform!=='supabase'){pane.innerHTML='<p class="mut">Testes de autorização disponíveis para alvos Supabase.</p>';return}
-    pane.innerHTML='<p class="mut">carregando tabelas…</p>'
+    if(t.platform!=='supabase'){pane.innerHTML='<p class="mut">Authorization tests are available for Supabase targets.</p>';return}
+    pane.innerHTML='<p class="mut">loading tables…</p>'
     const r=await api('/api/targets/'+id+'/resources')
-    if(r.error||r.kind!=='supabase'){pane.innerHTML=`<p class="mut">${esc(r.error||'indisponível')}</p>`;return}
+    if(r.error||r.kind!=='supabase'){pane.innerHTML=`<p class="mut">${esc(r.error||'unavailable')}</p>`;return}
     pane.innerHTML=''
-    pane.append($(`<div class="card"><div class="mut">Selecione a tabela. Estes testes agem sobre o alvo; use só onde você tem autorização.</div>
+    pane.append($(`<div class="card"><div class="mut">Pick a table. These tests act on the target; only use them where you're authorized.</div>
       <div class="row"><select id="atbl">${r.tables.map(x=>`<option>${esc(x)}</option>`).join('')}</select></div>
-      <div class="row"><label><input type="checkbox" id="allow"> permitir ESCRITA de teste (POST vazio)</label><button id="w">testar escrita</button></div>
-      <div class="row"><label><input type="checkbox" id="mkuser"> criar usuário sintético (cria conta no alvo)</label><button id="d">comparar identidades (RLS)</button></div>
+      <div class="row"><label><input type="checkbox" id="allow"> allow test WRITE (empty POST)</label><button id="w">test write</button></div>
+      <div class="row"><label><input type="checkbox" id="mkuser"> create a synthetic user (creates an account on the target)</label><button id="d">compare identities (RLS)</button></div>
     </div>`))
     const o=$('<div style="margin-top:12px"></div>');pane.append(o)
     document.getElementById('w').onclick=async()=>{o.innerHTML='…'
@@ -636,14 +647,14 @@ async function workspace(id){
       o.innerHTML=res.error?`<p class="mut">${esc(res.error)}</p>`:`<pre>${esc(JSON.stringify(res,null,2))}</pre>`}
   }
 
-  function paneRelatorio(){
-    pane.innerHTML=`<div class="card"><h3>Relatório técnico</h3>
-      <p class="mut">Evidências e PoCs deste alvo, prontos para compartilhar.</p>
-      <div class="row"><a class="tag" style="padding:8px 12px" href="/api/targets/${id}/report.html" target="_blank">abrir HTML (imprima p/ PDF)</a>
-      <a class="tag" style="padding:8px 12px" href="/api/targets/${id}/report.json" target="_blank">baixar JSON</a></div></div>`
+  function paneReport(){
+    pane.innerHTML=`<div class="card"><h3>Technical report</h3>
+      <p class="mut">Evidence and PoCs for this target, ready to share.</p>
+      <div class="row"><a class="tag" style="padding:8px 12px" href="/api/targets/${id}/report.html" target="_blank">open HTML (print to PDF)</a>
+      <a class="tag" style="padding:8px 12px" href="/api/targets/${id}/report.json" target="_blank">download JSON</a></div></div>`
   }
 
-  const panes=[paneEvidencias,paneExplorar,paneAuthz,paneRelatorio]
+  const panes=[paneEvidence,paneExplore,paneAuthz,paneReport]
   bar.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{
     bar.querySelectorAll('.tab').forEach(x=>x.classList.remove('pri'))
     b.classList.add('pri');panes[+b.dataset.i]()

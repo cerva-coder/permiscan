@@ -1,6 +1,6 @@
 services:
-  # Banco intencionalmente vulnerável para desenvolvimento e testes de integração.
-  # Escuta apenas em localhost; nunca exponha este serviço.
+  # Intentionally vulnerable database for development and integration tests.
+  # Only listens on localhost; never expose this service.
   lab-db:
     image: postgres:17-alpine
     environment:

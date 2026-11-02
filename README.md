@@ -1,106 +1,172 @@
 # PermiScan
 
-Auditoria de controle de acesso, autorização e exposição de dados em bancos de dados,
-plataformas BaaS e infraestrutura em nuvem.
+Access-control, authorization, and data-exposure auditing for databases, BaaS platforms
+(Supabase, Firebase), and cloud infrastructure — plus a local web platform to **browse and
+visualize** exactly what each misconfiguration exposes, without writing a single query by
+hand.
 
-O princípio do projeto: **verificar se os mecanismos de autorização realmente impedem
-acessos indevidos**, e não apenas se um recurso de segurança está ligado. Uma tabela sem
-policies não é automaticamente vulnerável; uma policy `USING (true)` não importa se nenhum
-papel exposto tem privilégio sobre a tabela. Toda regra do PermiScan cruza a configuração
-com os **privilégios efetivos** dos papéis que a aplicação expõe.
+*[Leia em português](README.pt-BR.md)*
 
-> **Uso autorizado apenas.** Cada comando recebe o alvo explicitamente (o DSN, a URL do
-> projeto ou o arquivo de regras que você indica). Use-o em sistemas que são seus ou que
-> você tem autorização expressa para avaliar. Veja [SECURITY.md](SECURITY.md).
+The project's principle: **check whether the authorization mechanisms actually stop
+unauthorized access**, not just whether a security feature is switched on. A table with no
+policies isn't automatically vulnerable; a `USING (true)` policy doesn't matter if no
+exposed role has a privilege on the table. Every PermiScan rule cross-references the
+configuration against the **effective privileges** of the roles the application exposes.
 
-## Status dos provedores
+> **Authorized use only.** Every command takes the target explicitly (the DSN, the project
+> URL, or the rules file you point it at). Use it on systems you own or that you have
+> express authorization to assess. See [SECURITY.md](SECURITY.md).
 
-| Provedor | Status | O que existe hoje |
+## What this is for
+
+Most scanners stop at "found a misconfigured Supabase table" and leave you to write curl
+commands to see what it actually exposes. PermiScan goes one step further with a local web
+platform: run a scan from the browser, and it opens a workspace where the exposed
+collections, Storage buckets, and Realtime Database nodes are already **navigable as
+clickable chips and breadcrumbs** — no prefix or path to type, no query to hand-craft. It's
+both the scanner *and* the viewer for what the scanner found.
+
+### Dashboard: scan and triage from the browser
+
+![Dashboard](docs/screenshots/dashboard.jpg)
+
+Run an individual scan or a mass triage of a URL list straight from the page — no CLI
+needed. Targets are listed with severity pills, filterable by platform/status/severity, and
+sortable by recency, finding count, or severity.
+
+### Explore tab: navigate what's exposed, automatically
+
+![Explore: Firestore collections as clickable chips](docs/screenshots/explore-firestore.jpg)
+
+Collections the scan already confirmed are public show up first as chips — click one and its
+documents load immediately. Firebase Storage buckets are the same: folders (`prefixes`) are
+clickable, with a breadcrumb to go back, and every file gets a direct download link.
+
+![Explore: Storage bucket folder navigation with breadcrumb](docs/screenshots/explore-storage.jpg)
+
+### Evidence and a shareable report
+
+![Evidence tab with finding detail and reproducible PoC](docs/screenshots/evidence.jpg)
+
+Every finding keeps its raw evidence, a reproducible PoC (a `curl` you can paste), and a
+remediation summary. The Report tab turns all of it into a print-ready HTML page (Ctrl+P →
+PDF) or a downloadable JSON, ready to hand to whoever owns the fix.
+
+![Technical report tab](docs/screenshots/report.jpg)
+
+The "Authorization tests" tab goes one step further for Supabase targets: it can test
+whether the anonymous role can write (gated behind an explicit checkbox) and diff read
+access between the `anon` role and a synthetic `authenticated` user, to evidence an RLS gap
+directly — both intrusive probes, off by default.
+
+## Provider status
+
+| Provider | Status | What exists today |
 |---|---|---|
-| Supabase (banco) | Análise estática disponível | RLS, policies, privilégios efetivos de `anon`/`authenticated`, views, views materializadas, funções `SECURITY DEFINER`. Validado contra o laboratório local que emula os papéis do Supabase; **ainda não validado contra um projeto Supabase real**. |
-| Supabase (Data API) | Testes dinâmicos disponíveis | Varredura externa com URL + chave anon: descobre tabelas/RPCs pelo OpenAPI, observa leitura anônima e, sob flag, testa escrita e chamada de RPC. Detecta chave `service_role` no cliente e extrai credenciais de uma página/bundle (`detect`). |
-| PostgreSQL | Análise estática disponível | Mesmas regras do banco, com papéis e schemas escolhidos pelo usuário, incluindo propriedade de tabela que anula o RLS. Validado em PostgreSQL 17. |
-| Firebase | Análise estática disponível | Security Rules de Firestore, Storage e Realtime Database. Testes dinâmicos com o Emulator: planejados (M6). |
-| Neon, MongoDB Atlas, Appwrite, PocketBase, AWS, GCP | Planejado | Prioridade 2. |
-| Azure, Hasura, Directus, Cloudflare e outros | Planejado | Prioridade 3. |
+| Supabase (database) | Static analysis available | RLS, policies, effective privileges of `anon`/`authenticated`, views, materialized views, `SECURITY DEFINER` functions. Validated against the local lab emulating Supabase's roles; **not yet validated against a real Supabase project**. |
+| Supabase (Data API) | Dynamic tests available | External scan with URL + anon key: discovers tables/RPCs via OpenAPI, observes anonymous reads, and under a flag, tests writes and RPC calls. Detects a `service_role` key on the client and extracts credentials from a page/bundle (`detect`). |
+| PostgreSQL | Static analysis available | Same rules as the database analysis, with user-chosen roles and schemas, including table ownership that nullifies RLS. Validated on PostgreSQL 17. |
+| Firebase | Static analysis available | Firestore, Storage, and Realtime Database Security Rules. Dynamic tests with the Emulator: planned. |
+| Neon, MongoDB Atlas, Appwrite, PocketBase, AWS, GCP | Planned | Priority 2. |
+| Azure, Hasura, Directus, Cloudflare, and others | Planned | Priority 3. |
 
-A varredura pela Data API observa comportamento real (confiança `confirmed`); a análise de
-catálogo e de regras é estática (confiança no máximo `likely`). A validação dinâmica do
-banco com identidades sintéticas ainda não existe (M5).
+The Data API scan observes real behavior (`confirmed` confidence); catalog and rules
+analysis is static (confidence tops out at `likely`). Dynamic database validation with
+synthetic identities doesn't exist yet.
 
-## Instalação
+## Installation
 
-Requer Python 3.12+ e [uv](https://docs.astral.sh/uv/).
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 uv sync
 ```
 
-## Uso
+## Usage
 
-### Menu interativo (sem argumentos)
+### Interactive menu (no arguments)
 
-Rode `permiscan` sem nada. Ele pergunta só o **modo** e o **nível do scan** — o resto é automático:
+Run `permiscan` with nothing. It only asks for the **mode** and the **scan level** — the
+rest is automatic:
 
 ```sh
 uv run permiscan
 ```
 
 ```
-  1  Scan individual       uma URL, totalmente automático
-  2  Scan em massa         triagem de uma lista de sites
-  3  Explorar lista salva  aprofunda os alvos achados na triagem
-  0  Sair
+  1  Single scan            one URL, fully automatic
+  2  Mass scan               triage a list of sites
+  3  Explore a saved list    digs deeper into the targets found in the triage
+  4  Web platform            opens the saved-targets dashboard in the browser
+  0  Exit
 ```
 
-- **Scan individual**: você dá uma URL; identifica a stack e vai fundo sozinho (enumera e, no
-  nível 3, extrai amostras).
-- **Scan em massa**: você dá uma lista de sites; triagem rápido quais têm Firebase/Supabase e
-  salva em JSON.
-- **Explorar lista salva**: pega o JSON da triagem e aprofunda só nos alvos com recursos.
+- **Single scan**: give it a URL; it identifies the stack and digs in on its own (enumerates,
+  and at level 3, extracts samples).
+- **Mass scan**: give it a list of sites; quickly triages which ones have Firebase/Supabase
+  and saves the result to JSON.
+- **Explore a saved list**: takes the triage's JSON and digs deeper only into the targets
+  that had resources.
+- **Web platform**: opens the browser-based dashboard described above, with every saved
+  target. From there you can also launch new scans — you don't need the CLI again once this
+  is running.
 
-**Níveis** (a única coisa perguntada antes de rodar):
+**Levels** (the only thing asked before running):
 
-| Nível | O que faz | Altera o alvo? |
+| Level | What it does | Alters the target? |
 |---|---|---|
-| 1 mínimo | identifica stack, config, endpoints | não |
-| 2 médio | + enumera e lê (tabelas, coleções, Storage, RTDB) | não |
-| 3 máximo | + extrai amostras, testa escrita/RPC e signup aberto | sim (ativo) |
+| 1 minimal | identifies stack, config, endpoints | no |
+| 2 medium | + enumerates and reads (tables, collections, Storage, RTDB) | no |
+| 3 maximum | + extracts samples, tests writes/RPC and open signup | yes (active) |
 
-Os comandos por argumento abaixo continuam para scripts e CI (incluindo `recon --level N`).
+The argument-based commands below still work for scripts and CI (including
+`recon --level N`).
 
-### Reconhecimento automático (só com a URL)
+### Web platform directly (`permiscan serve`)
 
-Identifica a stack, descobre endpoints e credenciais expostas e roteia para as análises
-cabíveis — sem você dizer o provedor:
+Skip the menu and open the dashboard straight away:
 
 ```sh
-uv run permiscan recon https://app.exemplo.com
-uv run permiscan recon https://app.exemplo.com --probe-writes --probe-rpc   # Supabase: testes ativos
-uv run permiscan recon https://app.exemplo.com --format json
+uv run permiscan serve
 ```
 
-Quando acha um backend, o `recon` já tenta enumerar automaticamente:
-- **Supabase**: tabelas e RPCs pela Data API (como o `scan-api`).
-- **Firebase**: descobre a config (inclusive em `/__/firebase/init.json`), tenta ler coleções
-  comuns do Firestore, listar o bucket de Storage e a leitura anônima do Realtime Database;
-  com `--probe-writes`, testa se o cadastro de usuários (Auth) está aberto.
+Opens `http://127.0.0.1:8080` and launches your browser. Runs entirely on your own machine
+reading your own local `permiscan.db` — nothing leaves it. `--port`, `--host`, and
+`--no-browser` are available if you need them.
 
-O relatório unificado traz: stack identificada (com confiança), endpoints descobertos,
-configurações/chaves expostas, findings e recomendações. O que exige credencial adicional
-(DSN do banco, arquivo de regras do Firebase) é apontado nas recomendações, não assumido.
+### Automatic recon (just the URL)
 
-> A descoberta de endpoints compara o corpo da resposta com uma rota inexistente: uma SPA que
-> devolve `index.html` para tudo (200 em qualquer caminho) não gera falso positivo de arquivo
-> exposto.
-
-### Análise do banco (Supabase/PostgreSQL via conexão direta)
-
-O DSN vai por variável de ambiente (credenciais nunca são aceitas como argumento). Prefira
-um papel dedicado sem privilégios extras; veja [SECURITY.md](SECURITY.md#papel-de-auditoria-recomendado).
+Identifies the stack, discovers exposed endpoints and credentials, and routes to the fitting
+analyses — without you naming the provider:
 
 ```sh
-export PERMISCAN_DSN='postgresql://permiscan_auditor:SENHA@db.abcdefghij.supabase.co:5432/postgres?sslmode=require'
+uv run permiscan recon https://app.example.com
+uv run permiscan recon https://app.example.com --probe-writes --probe-rpc   # Supabase: active tests
+uv run permiscan recon https://app.example.com --format json
+```
+
+When it finds a backend, `recon` already tries to enumerate it automatically:
+- **Supabase**: tables and RPCs through the Data API (like `scan-api`).
+- **Firebase**: discovers the config (including at `/__/firebase/init.json`), tries reading
+  common Firestore collections, lists the Storage bucket, and checks anonymous Realtime
+  Database reads; with `--probe-writes`, tests whether user signup (Auth) is open.
+
+The unified report brings: the identified stack (with confidence), discovered endpoints,
+exposed configs/keys, findings, and recommendations. Anything that needs an extra credential
+(the database DSN, a Firebase rules file) is flagged in the recommendations, never assumed.
+
+> Endpoint discovery compares the response body against a nonexistent route: an SPA that
+> returns `index.html` for everything (200 on any path) doesn't produce a false-positive
+> "exposed file".
+
+### Database analysis (Supabase/PostgreSQL via direct connection)
+
+The DSN goes through an environment variable (credentials are never accepted as an
+argument). Prefer a dedicated role with no extra privileges; see
+[SECURITY.md](SECURITY.md#recommended-auditing-role).
+
+```sh
+export PERMISCAN_DSN='postgresql://permiscan_auditor:PASSWORD@db.abcdefghij.supabase.co:5432/postgres?sslmode=require'
 
 uv run permiscan check --provider supabase
 uv run permiscan scan  --provider supabase
@@ -108,7 +174,7 @@ uv run permiscan scan  --provider supabase --format json --output findings.json 
 uv run permiscan scan  --provider postgresql --role app_user --schema app
 ```
 
-Opcionalmente, restrinja os alvos a uma allowlist com `--scope arquivo.toml`:
+Optionally, restrict targets to an allowlist with `--scope file.toml`:
 
 ```toml
 [[targets]]
@@ -116,7 +182,7 @@ host = "db.abcdefghij.supabase.co"
 port = 5432
 database = "postgres"
 
-# Em poolers compartilhados, fixe também o usuário: o host atende vários projetos.
+# On shared poolers, pin the user too: the host serves several projects.
 [[targets]]
 host = "aws-0-sa-east-1.pooler.supabase.com"
 port = 5432
@@ -124,51 +190,51 @@ database = "postgres"
 user = "permiscan_auditor.abcdefghij"
 ```
 
-### Varredura externa pela Data API do Supabase
+### External scan through the Supabase Data API
 
-Só com a URL do projeto e a chave anon (ambas públicas, embarcadas em qualquer frontend).
-Por padrão observa só o que uma requisição anônima **lê**. Os testes que alteram o alvo são
-flags explícitas e devem ser usados apenas onde você tem autorização.
+Just the project URL and the anon key (both public, embedded in any frontend). By default it
+only observes what an anonymous request can **read**. Tests that alter the target are
+explicit flags and should only be used where you're authorized.
 
 ```sh
-export PERMISCAN_ANON_KEY='eyJhbGci...'   # chave anon/publishable
+export PERMISCAN_ANON_KEY='eyJhbGci...'   # anon/publishable key
 
-# leitura (padrão): tabelas legíveis por anônimo + detecção de chave service_role
+# read (default): tables readable by anon + service_role key detection
 uv run permiscan scan-api --url https://abcdefghij.supabase.co
 
-# amostra maior de linhas como evidência
+# larger row sample as evidence
 uv run permiscan scan-api --url https://abcdefghij.supabase.co --rows 20
 
-# testes ativos (alteram o alvo): escrita e chamada de RPC
+# active tests (alter the target): writes and RPC calls
 uv run permiscan scan-api --url https://abcdefghij.supabase.co --probe-writes --probe-rpc
 
-# também chama RPCs de nome destrutivo (delete/drop/admin/…) — só em projeto próprio/de teste
+# also calls RPCs with a destructive-sounding name (delete/drop/admin/…) — only on your own/test project
 uv run permiscan scan-api --url https://abcdefghij.supabase.co --probe-rpc --include-destructive
 ```
 
-| Flag | O que faz | Altera o alvo? |
+| Flag | What it does | Alters the target? |
 |---|---|---|
-| (padrão) | lê 1 linha por tabela; detecta `service_role` | não |
-| `--rows N` | lê até N linhas como amostra | não |
-| `--probe-writes` | `POST` para testar escrita anônima | pode inserir linha |
-| `--probe-rpc` | chama RPCs para ver se respondem sem auth | executa a função |
-| `--include-destructive` | inclui RPCs de nome destrutivo em `--probe-rpc` | executa a função |
+| (default) | reads 1 row per table; detects `service_role` | no |
+| `--rows N` | reads up to N rows as a sample | no |
+| `--probe-writes` | `POST` to test anonymous writes | may insert a row |
+| `--probe-rpc` | calls RPCs to see if they respond without auth | runs the function |
+| `--include-destructive` | includes destructive-sounding RPCs in `--probe-rpc` | runs the function |
 
-### Detecção de credenciais em uma página ou bundle
+### Credential detection on a page or bundle
 
-Como a auto-detecção da extensão, mas em um alvo que você indica (uma página ou um arquivo
-local), não varrendo a web. Extrai URLs de projeto e chaves (anon, `service_role`,
-`sb_publishable_`, `sb_secret_`). Com `--scan`, varre cada instância encontrada:
+Like the browser extension's auto-detection, but on a target you point it at (a page or a
+local file), not crawling the web. Extracts project URLs and keys (anon, `service_role`,
+`sb_publishable_`, `sb_secret_`). With `--scan`, scans each instance found:
 
 ```sh
-uv run permiscan detect --url https://app.exemplo.com
+uv run permiscan detect --url https://app.example.com
 uv run permiscan detect --file dist/bundle.js
-uv run permiscan detect --url https://app.exemplo.com --scan --probe-writes
+uv run permiscan detect --url https://app.example.com --scan --probe-writes
 ```
 
 ### Firebase Security Rules
 
-Análise estática de um arquivo de regras local (o serviço é detectado pelo nome do arquivo):
+Static analysis of a local rules file (the service is detected from the filename):
 
 ```sh
 uv run permiscan scan-rules --rules firestore.rules
@@ -176,46 +242,46 @@ uv run permiscan scan-rules --rules storage.rules
 uv run permiscan scan-rules --rules database.rules --service rtdb
 ```
 
-| Código de saída | Significado |
+| Exit code | Meaning |
 |---|---|
-| 0 | Sucesso |
-| 1 | Erro de conexão ou configuração |
-| 2 | Alvo fora do escopo autorizado |
-| 3 | Há finding com severidade igual ou maior que `--fail-on` |
+| 0 | Success |
+| 1 | Connection or configuration error |
+| 2 | Target outside the authorized scope |
+| 3 | There's a finding at or above the `--fail-on` severity |
 
-A sessão com o banco é uma única transação `READ ONLY` com `statement_timeout`. O PermiScan
-lê apenas o catálogo do sistema; nenhuma linha das suas tabelas é consultada.
+The database session is a single `READ ONLY` transaction with a `statement_timeout`.
+PermiScan only reads the system catalog; no row from your tables is ever queried.
 
-## Regras disponíveis
+## Available rules
 
-| Regra | Detecta | Severidade |
+| Rule | Detects | Severity |
 |---|---|---|
-| `pg-rls-disabled` | Tabela sem RLS com privilégios efetivos para papéis expostos (inclui policies ignoradas) | critical (escrita) / high (leitura) |
-| `pg-policy-unrestricted` | Policy com condição sempre verdadeira, aplicável a papel com o privilégio correspondente | high (escrita) / medium (leitura) |
-| `pg-policy-no-ownership` | Policy de escrita que não referencia a identidade da requisição | medium |
-| `pg-rls-owner-bypass` | Papel auditado é dono da tabela e o RLS não está forçado | high |
-| `pg-role-bypass-rls` | Papel auditado com `SUPERUSER` ou `BYPASSRLS` | critical |
-| `pg-view-definer` | View sem `security_invoker` legível por papéis expostos | medium |
-| `pg-matview-exposed` | View materializada (sem suporte a RLS) legível por papéis expostos | medium |
-| `pg-func-secdef-exposed` | Função `SECURITY DEFINER` executável por papéis expostos | medium |
-| `pg-func-search-path` | Função `SECURITY DEFINER` sem `search_path` fixo | medium |
-| `supabase-api-anon-read` | Tabela que retorna dados a uma requisição anônima na Data API | medium–critical (pela sensibilidade das colunas) |
-| `supabase-api-anon-write` | Tabela em que o anônimo consegue escrever (`--probe-writes`) | high–critical |
-| `supabase-api-anon-rpc` | Função RPC que responde sem autenticação (`--probe-rpc`) | pelo nome da função |
-| `supabase-api-rpc-exposed` | RPC de nome destrutivo exposta, não chamada sem `--include-destructive` | info |
-| `supabase-service-role-key` | Chave `service_role` (ignora RLS) usada no cliente | critical |
-| `exposed-aws-access-key` | AWS Access Key ID (`AKIA…`) embarcada no frontend | critical |
-| `exposed-sensitive-file` | Arquivo sensível (`.env`, `.git/config`) servido publicamente | critical |
-| `firebase-rule-public` | Regra `allow …: if true` (Firestore/Storage) | high (leitura) / critical (escrita) |
-| `firebase-rule-any-authenticated-write` | Escrita exigindo só `request.auth != null`, sem propriedade | medium |
-| `firebase-rtdb-public-read` / `-write` | Realtime Database com `".read"`/`".write": true` | high / critical |
-| `firebase-firestore-public-read` | Coleções do Firestore legíveis por anônimo (recon) | high |
-| `firebase-storage-public-list` | Bucket do Storage com listagem pública (recon) | high |
-| `firebase-auth-signup-open` | Cadastro de usuários aberto no Firebase Auth (recon `--probe-writes`) | medium |
+| `pg-rls-disabled` | Table with no RLS and effective privileges for exposed roles (includes ignored policies) | critical (write) / high (read) |
+| `pg-policy-unrestricted` | Policy with an always-true condition, applicable to a role with the matching privilege | high (write) / medium (read) |
+| `pg-policy-no-ownership` | Write policy that doesn't reference the requester's identity | medium |
+| `pg-rls-owner-bypass` | The audited role owns the table and RLS isn't forced | high |
+| `pg-role-bypass-rls` | Audited role with `SUPERUSER` or `BYPASSRLS` | critical |
+| `pg-view-definer` | View without `security_invoker` readable by exposed roles | medium |
+| `pg-matview-exposed` | Materialized view (no RLS support) readable by exposed roles | medium |
+| `pg-func-secdef-exposed` | `SECURITY DEFINER` function executable by exposed roles | medium |
+| `pg-func-search-path` | `SECURITY DEFINER` function with no fixed `search_path` | medium |
+| `supabase-api-anon-read` | Table that returns data to an anonymous Data API request | medium–critical (by column sensitivity) |
+| `supabase-api-anon-write` | Table anonymous can write to (`--probe-writes`) | high–critical |
+| `supabase-api-anon-rpc` | RPC function that responds without authentication (`--probe-rpc`) | by the function's name |
+| `supabase-api-rpc-exposed` | Destructive-sounding RPC exposed, not called without `--include-destructive` | info |
+| `supabase-service-role-key` | `service_role` key (bypasses RLS) used on the client | critical |
+| `exposed-aws-access-key` | AWS Access Key ID (`AKIA…`) embedded in the frontend | critical |
+| `exposed-sensitive-file` | Sensitive file (`.env`, `.git/config`) served publicly | critical |
+| `firebase-rule-public` | `allow …: if true` rule (Firestore/Storage) | high (read) / critical (write) |
+| `firebase-rule-any-authenticated-write` | Write requiring only `request.auth != null`, no ownership check | medium |
+| `firebase-rtdb-public-read` / `-write` | Realtime Database with `".read"`/`".write": true` | high / critical |
+| `firebase-firestore-public-read` | Firestore collections readable by anonymous (recon) | high |
+| `firebase-storage-public-list` | Storage bucket with public listing (recon) | high |
+| `firebase-auth-signup-open` | Open user signup in Firebase Auth (recon `--probe-writes`) | medium |
 
-## Laboratório local
+## Local lab
 
-Um PostgreSQL intencionalmente vulnerável, com cenários vulneráveis e seguros lado a lado
+An intentionally vulnerable PostgreSQL, with vulnerable and safe scenarios side by side
 ([tests/fixtures/lab](tests/fixtures/lab)):
 
 ```sh
@@ -224,9 +290,8 @@ export PERMISCAN_DSN=postgresql://permiscan_auditor:auditor-lab-only@127.0.0.1:5
 uv run permiscan scan --provider supabase --scope tests/fixtures/lab/scope.toml
 ```
 
-## Documentação
+## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): componentes, decisões e limitações conhecidas.
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md): marcos e critérios de aceitação.
-- [SECURITY.md](SECURITY.md): uso autorizado, postura de segurança e relato de vulnerabilidades.
-- [CONTRIBUTING.md](CONTRIBUTING.md): ambiente de desenvolvimento, testes e como adicionar regras.
+- [SECURITY.md](SECURITY.md): authorized use, security posture, and vulnerability reporting.
+- [CONTRIBUTING.md](CONTRIBUTING.md): development environment, tests, and how to add rules.
+- [README.pt-BR.md](README.pt-BR.md): this README in Brazilian Portuguese.

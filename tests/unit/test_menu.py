@@ -14,7 +14,7 @@ def feed(monkeypatch):
 def test_ask_level_parses_and_loops(feed):
     feed(["3"])
     assert menu._ask_level() == 3
-    feed(["x", "0", "2"])  # inválidos até um válido
+    feed(["x", "0", "2"])  # invalid until a valid one
     assert menu._ask_level() == 2
 
 
@@ -36,7 +36,7 @@ def test_invalid_option_then_exit(feed):
 def test_individual_with_empty_url_does_not_call_recon(feed, monkeypatch):
     called = []
     monkeypatch.setattr(menu, "Recon", lambda *a, **k: called.append(a) or (_ for _ in ()).throw(AssertionError))
-    # modo 1, nível 2, URL vazia -> retorna sem chamar Recon; depois sai
+    # mode 1, level 2, empty URL -> returns without calling Recon; then exits
     feed(["1", "2", "", "n"])
     assert menu.run_menu() == 0
     assert called == []
@@ -54,7 +54,7 @@ def test_individual_runs_recon_with_chosen_level(feed, monkeypatch):
             return ReconResult(seen["url"])
 
     monkeypatch.setattr(menu, "Recon", FakeRecon)
-    # modo 1, nível 3, URL, depois não repetir
-    feed(["1", "3", "https://alvo.test", "n"])
+    # mode 1, level 3, URL, then don't repeat
+    feed(["1", "3", "https://target.test", "n"])
     assert menu.run_menu() == 0
-    assert seen == {"url": "https://alvo.test", "level": 3}
+    assert seen == {"url": "https://target.test", "level": 3}

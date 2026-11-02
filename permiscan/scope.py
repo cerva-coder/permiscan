@@ -1,4 +1,4 @@
-"""Escopo autorizado: nenhuma conexão é aberta para alvos fora da lista explícita."""
+"""Authorized scope: no connection is opened to targets outside the explicit list."""
 
 import tomllib
 from dataclasses import dataclass, field
@@ -11,8 +11,8 @@ class ScopeError(Exception):
     pass
 
 
-# Parâmetros que fazem a libpq conectar a um endereço diferente do host
-# declarado, o que permitiria contornar a validação de escopo.
+# Parameters that make libpq connect to an address different from the declared
+# host, which would allow bypassing scope validation.
 _FORBIDDEN_PARAMS = ("hostaddr", "service", "servicefile")
 
 
@@ -29,8 +29,8 @@ class Target:
         return f"{self.host}:{self.port}/{self.database}"
 
     def connect_kwargs(self) -> dict:
-        # host/port/dbname explícitos sobrescrevem PGHOST/PGPORT/PGDATABASE,
-        # garantindo que a conexão vá exatamente para o alvo validado.
+        # Explicit host/port/dbname override PGHOST/PGPORT/PGDATABASE,
+        # guaranteeing the connection goes exactly to the validated target.
         return {**self._conninfo, "host": self.host, "port": self.port, "dbname": self.database}
 
     def redact(self, text: str) -> str:
@@ -42,18 +42,18 @@ def parse_dsn(dsn: str) -> Target:
     try:
         info = conninfo_to_dict(dsn)
     except Exception as e:
-        raise ScopeError("DSN inválido") from e
+        raise ScopeError("invalid DSN") from e
     if bad := [p for p in _FORBIDDEN_PARAMS if p in info]:
-        raise ScopeError(f"parâmetros não permitidos no DSN: {', '.join(bad)}")
+        raise ScopeError(f"parameters not allowed in the DSN: {', '.join(bad)}")
     host, database = info.get("host"), info.get("dbname")
     if not host or not database:
-        raise ScopeError("o DSN deve declarar host e dbname explicitamente")
+        raise ScopeError("the DSN must declare host and dbname explicitly")
     if "," in host:
-        raise ScopeError("DSN com múltiplos hosts não é suportado")
+        raise ScopeError("DSN with multiple hosts is not supported")
     try:
         port = int(info.get("port") or 5432)
     except ValueError as e:
-        raise ScopeError("porta inválida no DSN") from e
+        raise ScopeError("invalid port in the DSN") from e
     return Target(host.lower(), port, database, info.get("user"), info)
 
 
@@ -62,7 +62,7 @@ class ScopeEntry:
     host: str
     port: int
     database: str
-    user: str | None = None  # necessário em poolers compartilhados (ex.: Supabase Supavisor)
+    user: str | None = None  # needed on shared poolers (e.g. Supabase Supavisor)
 
     def matches(self, t: Target) -> bool:
         return (
@@ -75,20 +75,20 @@ def load_scope(path: Path) -> list[ScopeEntry]:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as e:
-        raise ScopeError(f"arquivo de escopo não encontrado: {path}") from e
+        raise ScopeError(f"scope file not found: {path}") from e
     except tomllib.TOMLDecodeError as e:
-        raise ScopeError(f"arquivo de escopo inválido: {e}") from e
+        raise ScopeError(f"invalid scope file: {e}") from e
     entries = []
     for i, t in enumerate(data.get("targets", [])):
         try:
             entries.append(ScopeEntry(t["host"].lower(), int(t.get("port", 5432)), t["database"], t.get("user")))
         except (KeyError, TypeError, ValueError) as e:
-            raise ScopeError(f"alvo #{i + 1} do escopo inválido: requer host e database") from e
+            raise ScopeError(f"invalid scope target #{i + 1}: requires host and database") from e
     if not entries:
-        raise ScopeError("o escopo não declara nenhum alvo autorizado")
+        raise ScopeError("the scope doesn't declare any authorized target")
     return entries
 
 
 def authorize(target: Target, entries: list[ScopeEntry]) -> None:
     if not any(e.matches(target) for e in entries):
-        raise ScopeError(f"alvo fora do escopo autorizado: {target.label}")
+        raise ScopeError(f"target outside the authorized scope: {target.label}")

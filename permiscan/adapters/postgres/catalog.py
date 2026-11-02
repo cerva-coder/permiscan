@@ -1,7 +1,7 @@
-"""Coleta somente leitura do catálogo do PostgreSQL em um snapshot imutável.
+"""Read-only collection of the PostgreSQL catalog into an immutable snapshot.
 
-As regras operam sobre o snapshot, nunca sobre a conexão: isso as mantém puras,
-testáveis sem banco e reaproveitáveis por qualquer provedor baseado em PostgreSQL.
+Rules operate on the snapshot, never on the connection: this keeps them pure,
+testable without a database, and reusable by any PostgreSQL-based provider.
 """
 
 from dataclasses import dataclass, field
@@ -28,9 +28,9 @@ class Relation:
     rls_enabled: bool
     rls_forced: bool
     security_invoker: bool
-    # privilégios efetivos (herança e PUBLIC incluídos) de cada papel auditado
+    # effective privileges (inheritance and PUBLIC included) of each audited role
     privileges: dict[str, frozenset[str]] = field(default_factory=dict)
-    # papéis auditados que são donos da relação, diretamente ou por herança
+    # audited roles that own the relation, directly or via inheritance
     owned_by: frozenset[str] = frozenset()
 
     @property

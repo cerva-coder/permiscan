@@ -1,6 +1,6 @@
-# Contribuindo
+# Contributing
 
-## Ambiente
+## Environment
 
 ```sh
 uv sync
@@ -9,37 +9,38 @@ export PERMISCAN_LAB_DSN=postgresql://permiscan_auditor:auditor-lab-only@127.0.0
 uv run pytest
 ```
 
-Sem `PERMISCAN_LAB_DSN` os testes de integração são pulados; o CI sempre os executa.
-Use `127.0.0.1` e não `localhost`: o laboratório escuta só em IPv4, e `localhost` pode
-resolver primeiro para `::1`, o que custa um timeout por conexão.
+Without `PERMISCAN_LAB_DSN` the integration tests are skipped; CI always runs them.
+Use `127.0.0.1`, not `localhost`: the lab only listens on IPv4, and `localhost` can
+resolve to `::1` first, which costs a connection timeout.
 
-Para recriar o laboratório depois de alterar os SQL: `docker compose down -v && docker compose up -d --wait lab-db`.
+To recreate the lab after changing the SQL: `docker compose down -v && docker compose up -d --wait lab-db`.
 
-## Adicionando uma regra PostgreSQL
+## Adding a PostgreSQL rule
 
-1. Escreva uma função `(snapshot, provider) -> Iterator[Finding]` em
-   `permiscan/adapters/postgres/rules.py` e inclua-a em `RULES`.
-2. Cruze sempre a configuração com os privilégios efetivos (`Relation.privileges`,
-   `Function.executable_by`): sem papel capaz de exercer a operação, não há finding.
-3. Se precisar de dados novos do catálogo, estenda o `Snapshot` em `catalog.py`.
-4. Testes unitários em `tests/unit/test_rules.py` com um caso vulnerável **e** um seguro.
-5. Adicione um objeto vulnerável em `tests/fixtures/lab/10_vulnerable.sql`, um seguro em
-   `20_safe.sql`, e atualize o conjunto esperado em `tests/integration/test_lab.py`.
-6. Documente a regra na tabela do README.
+1. Write a `(snapshot, provider) -> Iterator[Finding]` function in
+   `permiscan/adapters/postgres/rules.py` and add it to `RULES`.
+2. Always cross-reference the configuration with effective privileges
+   (`Relation.privileges`, `Function.executable_by`): no role able to perform the
+   operation means no finding.
+3. If you need new catalog data, extend `Snapshot` in `catalog.py`.
+4. Unit tests in `tests/unit/test_rules.py` with one vulnerable case **and** one safe case.
+5. Add a vulnerable object to `tests/fixtures/lab/10_vulnerable.sql`, a safe one to
+   `20_safe.sql`, and update the expected set in `tests/integration/test_lab.py`.
+6. Document the rule in the README's table.
 
-Confiança: `likely` quando o catálogo prova a condição; `possible` quando depende de
-heurística ou intenção; `confirmed` só a partir de teste dinâmico.
+Confidence: `likely` when the catalog proves the condition; `possible` when it depends
+on a heuristic or intent; `confirmed` only from a dynamic test.
 
-## Adicionando um provedor
+## Adding a provider
 
-Implemente `permiscan.adapters.base.Adapter`, declare em `capabilities` apenas o que está
-implementado e registre em `permiscan/adapters/__init__.py`. Atualize a tabela de status do
-README. Não declare suporte sem validar a integração; se faltar credencial para validar,
-documente o que foi testado e como.
+Implement `permiscan.adapters.base.Adapter`, declare in `capabilities` only what's
+actually implemented, and register it in `permiscan/adapters/__init__.py`. Update the
+README's status table. Don't declare support without validating the integration; if a
+credential is missing to validate it, document what was tested and how.
 
-## Convenções
+## Conventions
 
-- Textos para o usuário e comentários em português; identificadores em inglês.
-- Commits no formato Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
-- Fixtures apenas com dados sintéticos. Nunca versione credenciais, DSNs reais ou relatórios
-  de alvos reais.
+- User-facing text and comments in English; identifiers in English.
+- Commits in Conventional Commits format (`feat:`, `fix:`, `docs:`, `test:`, `chore:`).
+- Fixtures use synthetic data only. Never commit real credentials, real DSNs, or
+  reports from real targets.

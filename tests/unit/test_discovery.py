@@ -145,8 +145,8 @@ def test_firestore_and_storage_enumeration():
     findings = {f.rule_id: f for f in FakeRecon(pages).run().findings}
     assert "firebase-firestore-public-read" in findings
     storage = findings["firebase-storage-public-list"]
-    assert storage.evidence["files"] == ["a.png"]  # drill-down: lista os arquivos
-    assert "download_urls" not in storage.evidence  # nível 2 não extrai URLs
+    assert storage.evidence["files"] == ["a.png"]  # drill-down: lists the files
+    assert "download_urls" not in storage.evidence  # level 2 doesn't extract URLs
 
     # nível 3 extrai as URLs de download diretas
     storage3 = {f.rule_id: f for f in FakeRecon(pages, level=3).run().findings}["firebase-storage-public-list"]

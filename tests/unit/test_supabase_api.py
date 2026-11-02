@@ -65,7 +65,7 @@ def test_anon_readable_table_scales_with_column_sensitivity():
     scanner = StubScanner(make_jwt({"role": "anon", "ref": "abcd"}), {
         "invoices": ApiTable("invoices", ("id", "amount", "password"), 42),
         "public_posts": ApiTable("public_posts", ("id", "title"), 3),
-        "locked": None,  # anon não conseguiu ler
+        "locked": None,  # anon couldn't read it
     })
     by_resource = {f.resource: f for f in scanner.scan()}
     assert set(by_resource) == {"rest/v1/invoices", "rest/v1/public_posts"}
@@ -149,9 +149,9 @@ def test_destructive_rpc_is_not_called_without_opt_in():
 
     guarded = RpcScanner(ApiScanOptions(probe_rpc=True))
     found = {f.rule_id for f in guarded.scan()}
-    assert "delete_all" not in guarded.called                      # destrutiva não foi chamada
-    assert "supabase-api-rpc-exposed" in found                     # mas aparece como "não chamada"
-    assert "supabase-api-anon-rpc" in found                        # get_stats foi chamada e é finding
+    assert "delete_all" not in guarded.called                      # destructive one wasn't called
+    assert "supabase-api-rpc-exposed" in found                     # but shows up as "not called"
+    assert "supabase-api-anon-rpc" in found                        # get_stats was called and is a finding
 
     loud = RpcScanner(ApiScanOptions(probe_rpc=True, include_destructive=True))
     loud.scan()

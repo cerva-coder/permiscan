@@ -53,8 +53,8 @@ def test_confidence_reflects_certainty():
 
 
 def test_unrecognized_file_raises():
-    with pytest.raises(AdapterError, match="nenhuma regra"):
-        analyze_rules("isto não são regras do firebase", "firestore", "x.rules")
+    with pytest.raises(AdapterError, match="no 'allow' rule"):
+        analyze_rules("this is not firebase rules at all", "firestore", "x.rules")
 
 
 def test_service_detection_from_filename(tmp_path):

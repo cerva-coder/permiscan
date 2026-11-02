@@ -1,20 +1,22 @@
-"""Classificação de sensibilidade pelo NOME da coluna/campo.
+"""Sensitivity classification by column/field NAME.
 
-Usada para escalar a severidade de uma exposição sem ler nenhum dado real:
-olhamos só os nomes das colunas que o esquema expõe, nunca os valores.
+Used to escalate the severity of an exposure without reading any real data:
+we only look at the names of the columns the schema exposes, never the values.
 """
 
 import re
 
 from permiscan.findings import Severity
 
-# Campos cuja exposição é grave independentemente do conteúdo.
+# Fields whose exposure is serious regardless of content. Patterns cover both English and
+# Portuguese column names (senha/segredo/telefone/cpf/cnpj/…), since many real-world databases
+# audited by this tool — especially Brazilian ones — name columns in Portuguese.
 _CRITICAL = re.compile(
     r"\b(senha|password|passwd|pwd|secret|segredo|api[_-]?key|private[_-]?key|"
     r"token|jwt|access[_-]?token|refresh[_-]?token|card[_-]?number|cartao|cvv|cvc)\b",
     re.I,
 )
-# Dados pessoais identificáveis.
+# Personally identifiable information.
 _HIGH = re.compile(
     r"\b(email|e[_-]?mail|phone|telefone|celular|cpf|cnpj|rg|ssn|passport|passaporte|"
     r"national[_-]?id|tax[_-]?id|iban|bank[_-]?account|conta[_-]?banc|salary|salario|renda)\b",
@@ -25,7 +27,7 @@ _MEDIUM = re.compile(
     r"latitude|longitude|birth|nascimento|dob|ip[_-]?address|device[_-]?id)\b",
     re.I,
 )
-# Nomes que nunca devem puxar a severidade para cima.
+# Names that should never pull severity up.
 _BENIGN = re.compile(r"^(id|created_at|updated_at|name|nome|title|titulo|slug|url|description)$", re.I)
 
 
@@ -42,7 +44,7 @@ def field_severity(name: str) -> Severity:
 
 
 def most_sensitive(names: list[str]) -> tuple[Severity, list[str]]:
-    """Maior severidade entre os campos e os nomes que a justificam."""
+    """Highest severity among the fields, and the names that justify it."""
     worst, flagged = Severity.INFO, []
     for name in names:
         sev = field_severity(name)

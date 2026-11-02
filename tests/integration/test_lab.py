@@ -1,4 +1,4 @@
-"""Integração contra o laboratório: docker compose up -d lab-db"""
+"""Integration test against the lab: docker compose up -d lab-db"""
 
 import json
 import os
@@ -53,7 +53,7 @@ def test_postgres_owner_bypass_and_forced_rls():
 
 
 def test_supabase_check_rejects_targets_without_supabase_roles():
-    with pytest.raises(AdapterError, match="não parece um projeto Supabase"):
+    with pytest.raises(AdapterError, match="doesn't look like a Supabase project"):
         SupabaseAdapter(parse_dsn(DSN), roles=["ghost_role"]).check()
 
 

@@ -1,7 +1,8 @@
-"""Menu interativo: roda `permiscan` sem argumentos.
+"""Interactive menu: runs when `permiscan` is launched with no arguments.
 
-Fluxo enxuto — escolhe o modo, o NÍVEL do scan (só isso), o alvo, e o resto é automático:
-o recon identifica a stack e vai fundo sozinho (enumera e, no nível 3, extrai).
+A lean flow — pick the mode, the scan LEVEL (that's it), the target, and the rest is
+automatic: recon identifies the stack and digs in on its own (enumerates, and at
+level 3, extracts).
 """
 
 from argparse import Namespace
@@ -24,10 +25,10 @@ def _ask(prompt: str, default: str = "") -> str:
 
 def _ask_level() -> int:
     while True:
-        raw = _ask("Nível do scan (1=mínimo  2=médio  3=máximo agressivo)", "2")
+        raw = _ask("Scan level (1=minimal  2=medium  3=maximum/aggressive)", "2")
         if raw in ("1", "2", "3"):
             return int(raw)
-        print("Escolha 1, 2 ou 3.")
+        print("Choose 1, 2 or 3.")
 
 
 def _print_menu() -> None:
@@ -41,11 +42,11 @@ def _print_menu() -> None:
     t.add_column(style="bold")
     t.add_column(style="grey62")
     for num, label, hint in (
-        ("1", "Scan individual", "uma URL, totalmente automático"),
-        ("2", "Scan em massa", "triagem de uma lista de sites"),
-        ("3", "Explorar lista salva", "aprofunda os alvos achados na triagem"),
-        ("4", "Plataforma web", "abre o dashboard dos alvos salvos no navegador"),
-        ("0", "Sair", ""),
+        ("1", "Single scan", "one URL, fully automatic"),
+        ("2", "Mass scan", "triage a list of sites"),
+        ("3", "Explore a saved list", "digs deeper into the targets found in the triage"),
+        ("4", "Web platform", "opens the saved-targets dashboard in the browser"),
+        ("0", "Exit", ""),
     ):
         t.add_row(num, label, hint)
     report.console().print(Panel(t, title="[bold]PermiScan[/]", border_style="cyan", padding=(1, 2)))
@@ -58,24 +59,24 @@ def _print_recon(result) -> None:
 
 def _run_individual() -> None:
     level = _ask_level()
-    url = _ask("URL do alvo (https://…)")
+    url = _ask("Target URL (https://…)")
     if not url:
         return
-    print(f"\nScan nível {level} ({SCAN_LEVELS[level]}) em {url}…\n")
+    print(f"\nLevel {level} scan ({SCAN_LEVELS[level]}) on {url}…\n")
     result = Recon(url, level=level).run()
     store.enroll(result, "menu-individual")
     _print_recon(result)
 
 
 def _collect_urls() -> list[str]:
-    raw = _ask("Arquivo com URLs (uma por linha), ou vazio p/ digitar")
+    raw = _ask("File with URLs (one per line), or empty to type them")
     if raw:
         try:
             return load_urls(Path(raw))
         except OSError as e:
-            print(f"erro: {e}")
+            print(f"error: {e}")
             return []
-    typed = _ask("URLs separadas por espaço/vírgula")
+    typed = _ask("URLs separated by space/comma")
     return [u for u in typed.replace(",", " ").split() if u]
 
 
@@ -84,14 +85,14 @@ def _survey_table(records: list[dict]):
 
     from permiscan import report
 
-    t = Table(title="Triagem", title_justify="left", title_style="bold")
-    t.add_column("recursos", justify="center")
+    t = Table(title="Triage", title_justify="left", title_style="bold")
+    t.add_column("resources", justify="center")
     t.add_column("site")
     t.add_column("stacks", style="grey70")
     t.add_column("findings", justify="right")
     for r in records:
         if r.get("error"):
-            t.add_row("—", r["url"], f"[red]erro[/]", "")
+            t.add_row("—", r["url"], f"[red]error[/]", "")
             continue
         mark = "[green]●[/]" if has_resources(r) else "·"
         crit = r["severity_counts"].get("critical", 0) + r["severity_counts"].get("high", 0)
@@ -104,9 +105,9 @@ def _run_mass() -> None:
     level = _ask_level()
     urls = _collect_urls()
     if not urls:
-        print("Nenhuma URL.")
+        print("No URLs.")
         return
-    print(f"\nTriando {len(urls)} site(s) no nível {level}…\n")
+    print(f"\nTriaging {len(urls)} site(s) at level {level}…\n")
 
     def progress(i, total, rec):
         tag = "●" if has_resources(rec) else ("x" if rec.get("error") else "·")
@@ -116,39 +117,39 @@ def _run_mass() -> None:
     print()
     _survey_table(records)
     interesting = [r["url"] for r in records if has_resources(r)]
-    print(f"\n{len(interesting)} de {len(records)} com recursos (Firebase/Supabase ou findings).")
+    print(f"\n{len(interesting)} of {len(records)} have resources (Firebase/Supabase or findings).")
 
     path = next_scan_path()
     save_survey(records, path)
-    print(f"Salvo em {path}. Explore depois com a opção 3.")
+    print(f"Saved to {path}. Explore it later with option 3.")
 
 
 def _run_explore() -> None:
     scans = list_scans()
     if not scans:
-        print("Nenhum scan salvo ainda. Rode a opção 2 (scan em massa) primeiro.")
+        print("No saved scan yet. Run option 2 (mass scan) first.")
         return
-    print("Scans salvos:")
+    print("Saved scans:")
     for i, p in enumerate(scans, 1):
         try:
             recs = load_survey(p)
-            print(f"  {i}) {p.name}  —  {len(recs)} site(s), {sum(map(has_resources, recs))} com recursos")
+            print(f"  {i}) {p.name}  —  {len(recs)} site(s), {sum(map(has_resources, recs))} with resources")
         except (OSError, ValueError):
-            print(f"  {i}) {p.name}  —  [ilegível]")
-    pick = _ask("Qual scan explorar (número)", "1")
+            print(f"  {i}) {p.name}  —  [unreadable]")
+    pick = _ask("Which scan to explore (number)", "1")
     if not (pick.isdigit() and 1 <= int(pick) <= len(scans)):
-        print("Opção inválida.")
+        print("Invalid option.")
         return
     try:
         records = load_survey(scans[int(pick) - 1])
     except (OSError, ValueError) as e:
-        print(f"erro: {e}")
+        print(f"error: {e}")
         return
     targets = [r["url"] for r in records if has_resources(r)]
     if not targets:
-        print("Nenhum alvo com recursos na triagem.")
+        print("No target with resources in the triage.")
         return
-    print(f"{len(targets)} alvo(s) com recursos. Explorando a fundo…")
+    print(f"{len(targets)} target(s) with resources. Exploring in depth…")
     level = _ask_level()
     for url in targets:
         print(f"\n{'─' * 60}\n{url}\n")
@@ -157,14 +158,14 @@ def _run_explore() -> None:
             store.enroll(result, "menu-explore")
             _print_recon(result)
         except Exception as e:  # noqa: BLE001
-            print(f"erro em {url}: {e}")
+            print(f"error on {url}: {e}")
 
 
 def _run_web() -> None:
     from permiscan.serve import serve
 
     n = store.stats()["targets"]
-    print(f"{n} alvo(s) no banco. Abrindo a plataforma web…")
+    print(f"{n} target(s) in the database. Opening the web platform…")
     serve()
 
 
@@ -174,16 +175,16 @@ _MODES = {"1": _run_individual, "2": _run_mass, "3": _run_explore, "4": _run_web
 def run_menu() -> int:
     while True:
         _print_menu()
-        choice = _ask("Escolha")
-        if choice in ("0", "", "sair", "q"):
+        choice = _ask("Choose")
+        if choice in ("0", "", "exit", "q"):
             return 0
         action = _MODES.get(choice)
         if not action:
-            print("Opção inválida.")
+            print("Invalid option.")
             continue
         try:
             action()
         except KeyboardInterrupt:
-            print("\nInterrompido.")
-        if not _ask("\nFazer outra coisa? (s/N)").lower().startswith("s"):
+            print("\nInterrupted.")
+        if not _ask("\nDo something else? (y/N)").lower().startswith("y"):
             return 0

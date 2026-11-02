@@ -1,70 +1,71 @@
-# Segurança
+# Security
 
-## Uso autorizado
+## Authorized use
 
-O PermiScan é uma ferramenta de segurança defensiva. Use-a somente em sistemas que são
-seus ou que você tem autorização expressa e documentada para avaliar: suas aplicações,
-avaliações contratadas, ambientes de laboratório e aplicações intencionalmente vulneráveis.
+PermiScan is a defensive security tool. Only use it against systems you own or have
+express, documented authorization to assess: your own applications, contracted
+assessments, lab environments, and intentionally vulnerable applications.
 
-A ferramenta reforça isso tecnicamente de duas formas: cada comando recebe o alvo
-explicitamente (o DSN, a URL ou o arquivo de regras que você indica — ela não sai coletando
-credenciais de páginas nem varrendo o que encontra), e nenhuma operação que altera o alvo é
-feita por padrão (sem escrita, sem execução de RPC). Uma allowlist em TOML continua
-disponível via `--scope` para quem quiser travar os alvos.
+The tool enforces this technically in two ways: every command takes the target
+explicitly (the DSN, URL, or rules file you point it at — it never crawls the web for
+credentials or scans whatever it stumbles on), and no operation that alters the target
+runs by default (no writes, no RPC execution). An optional TOML allowlist is still
+available via `--scope` for anyone who wants to pin down the targets.
 
-## Relatar uma vulnerabilidade no PermiScan
+## Reporting a vulnerability in PermiScan
 
-Não abra issue pública. Use o relato privado de vulnerabilidades do GitHub no repositório
-(**Security → Report a vulnerability**), com passos de reprodução e impacto esperado.
+Don't open a public issue. Use GitHub's private vulnerability reporting on this
+repository (**Security → Report a vulnerability**), with reproduction steps and the
+expected impact.
 
-## Postura de segurança da ferramenta
+## The tool's security posture
 
-### Implementado
+### Implemented
 
-| Controle | Como |
+| Control | How |
 |---|---|
-| Alvo explícito | Cada comando recebe o alvo diretamente (DSN, URL, página ou arquivo). O `detect` extrai credenciais de uma página/arquivo que você indica; não há varredura automática da web. |
-| Somente leitura por padrão | A análise do banco é sempre somente leitura. A Data API, por padrão, só faz `GET`. Os testes que alteram o alvo (`--probe-writes`, `--probe-rpc`) são opt-in e avisam na saída de erro. |
-| RPCs destrutivas protegidas | Em `--probe-rpc`, funções de nome destrutivo (delete/drop/admin/…) não são chamadas sem `--include-destructive`; aparecem no relatório como "não chamada". |
-| Alvo fixado (banco) | `host`/`port`/`dbname` explícitos sobrepõem variáveis `PG*`; `hostaddr`, `service` e múltiplos hosts são recusados. |
-| Somente leitura (banco) | Toda a sessão roda em uma transação `READ ONLY` encerrada com `ROLLBACK`; apenas o catálogo do sistema é consultado. |
-| Timeouts | `connect_timeout`/`statement_timeout` de 10 s/30 s no banco; 15 s por requisição na Data API. |
-| Credenciais | DSN e chave anon apenas por variável de ambiente, nunca por argumento (evita histórico do shell e listagem de processos). |
-| Mascaramento | A senha é removida de mensagens de erro; o `repr` do alvo não inclui credenciais; exceções do driver não são encadeadas. |
-| Allowlist opcional | `--scope arquivo.toml` restringe os alvos de banco a uma lista; alvo fora dela é recusado (código de saída 2). |
-| Identificação no alvo | Conexões ao banco usam `application_name=permiscan`, visível em `pg_stat_activity` e nos logs do servidor. |
+| Explicit target | Every command takes the target directly (DSN, URL, page, or file). `detect` extracts credentials from a page/file you point it at; there's no automatic web crawling. |
+| Read-only by default | Database analysis is always read-only. The Data API only does `GET` by default. Tests that alter the target (`--probe-writes`, `--probe-rpc`) are opt-in and print a warning to stderr. |
+| Destructive RPCs guarded | Under `--probe-rpc`, functions with a destructive-sounding name (delete/drop/admin/…) aren't called without `--include-destructive`; they show up in the report as "not called". |
+| Pinned target (database) | Explicit `host`/`port`/`dbname` override `PG*` env vars; `hostaddr`, `service`, and multiple hosts are rejected. |
+| Read-only (database) | The whole session runs inside a `READ ONLY` transaction, closed with `ROLLBACK`; only the system catalog is queried. |
+| Timeouts | `connect_timeout`/`statement_timeout` of 10s/30s on the database; 15s per request on the Data API. |
+| Credentials | DSN and anon key only via environment variable, never as an argument (avoids shell history and process listings). |
+| Redaction | The password is stripped from error messages; a target's `repr` never includes credentials; driver exceptions aren't chained. |
+| Optional allowlist | `--scope file.toml` restricts database targets to a list; a target outside it is rejected (exit code 2). |
+| Identifiable on the target | Database connections use `application_name=permiscan`, visible in `pg_stat_activity` and the server logs. |
 
-### Planejado
+### Planned
 
-- Testes dinâmicos do banco com identidades e registros sintéticos, sempre em transação
-  revertida (M5); prova mínima (contagem em vez de linhas) por padrão.
-- Validação de regras do Firebase pelo Emulator Suite (M6).
+- Dynamic database tests with synthetic identities and records, always inside a
+  rolled-back transaction; minimal proof (counts instead of rows) by default.
+- Firebase rules validation through the Emulator Suite.
 
-Criptografia de credenciais em repouso, audit log, workers isolados e rate limiting são
-controles de uma implantação multiusuário; como o PermiScan hoje é um CLI local que recebe o
-alvo a cada execução, não são implementados. Entram quando (e se) existir a API multiusuário.
+Encryption of credentials at rest, an audit log, isolated workers, and rate limiting are
+controls for a multi-user deployment; since PermiScan today is a local CLI that takes the
+target on every run, they aren't implemented. They'd come in if (and when) a multi-user
+API exists.
 
-## Papel de auditoria recomendado
+## Recommended auditing role
 
-O PermiScan não precisa de superusuário. Um papel com login e nenhum privilégio extra lê o
-catálogo e calcula privilégios efetivos de outros papéis. O laboratório e os testes de
-integração rodam exatamente assim.
+PermiScan doesn't need a superuser. A login role with no extra privileges can read the
+catalog and compute other roles' effective privileges. The lab and the integration tests
+run exactly this way.
 
 ```sql
-CREATE ROLE permiscan_auditor LOGIN PASSWORD '<senha forte>';
--- nenhum GRANT adicional é necessário
+CREATE ROLE permiscan_auditor LOGIN PASSWORD '<a strong password>';
+-- no additional GRANT is needed
 ```
 
-O `permiscan check` avisa quando a conexão usa um superusuário ou não está em modo
-somente leitura.
+`permiscan check` warns when the connection uses a superuser or isn't in read-only mode.
 
-## Modelo de ameaças (resumo)
+## Threat model (summary)
 
-| Ativo | Ameaça | Mitigação |
+| Asset | Threat | Mitigation |
 |---|---|---|
-| Credenciais do alvo | Vazamento em logs, histórico, saída | DSN por ambiente, redação, sem encadeamento de exceções |
-| Alvos de terceiros | Uso contra sistema não autorizado | Allowlist obrigatória; DSN fixado ao alvo validado |
-| Integridade do alvo | Escrita ou carga acidental | Banco: transação `READ ONLY`. Data API: escrita e RPC só sob flag explícita, com aviso; RPCs destrutivas exigem `--include-destructive` |
-| Exposição de dados na evidência | Amostra de linhas em `--rows`/`scan-api` vaza dados do alvo | Padrão lê 1 linha; valores são truncados na evidência; relatórios ficam locais e no `.gitignore` |
-| Relatórios de findings | Exposição do mapa de falhas | Saída local; não versione relatórios (`*.findings.json` no `.gitignore`) |
-| Ferramenta | Falso positivo levando a mudança errada | Privilégios efetivos, nível de confiança explícito, remediação revisável |
+| Target credentials | Leak in logs, history, output | DSN via environment, redaction, no exception chaining |
+| Third-party targets | Use against an unauthorized system | Mandatory allowlist; DSN pinned to the validated target |
+| Target integrity | Accidental write or load | Database: `READ ONLY` transaction. Data API: writes and RPC only under an explicit flag, with a warning; destructive RPCs require `--include-destructive` |
+| Data exposure in evidence | Row sample in `--rows`/`scan-api` leaks target data | Default reads 1 row; values are truncated in evidence; reports stay local and gitignored |
+| Finding reports | Exposure of the vulnerability map | Local output; don't version reports (`*.findings.json` is gitignored) |
+| The tool itself | False positive leading to the wrong fix | Effective privileges, explicit confidence level, reviewable remediation |

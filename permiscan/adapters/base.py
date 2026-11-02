@@ -1,4 +1,4 @@
-"""Contrato comum dos adaptadores de provedores."""
+"""Common contract for provider adapters."""
 
 from abc import ABC, abstractmethod
 from enum import StrEnum
@@ -21,13 +21,13 @@ class AdapterError(Exception):
 
 class Adapter(ABC):
     provider: ClassVar[str]
-    # O que o adaptador realmente implementa; nada é declarado por antecipação.
+    # What the adapter actually implements; nothing is declared in advance.
     capabilities: ClassVar[frozenset[Capability]]
 
     @abstractmethod
     def check(self) -> dict[str, Any]:
-        """Valida a conexão e informa o que foi detectado no alvo."""
+        """Validates the connection and reports what was detected on the target."""
 
     @abstractmethod
     def scan(self) -> list[Finding]:
-        """Executa a análise e devolve findings normalizados."""
+        """Runs the analysis and returns normalized findings."""

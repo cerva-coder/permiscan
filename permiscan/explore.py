@@ -1,9 +1,10 @@
-"""Exploração ao vivo de um alvo salvo, reaproveitando os scanners existentes.
+"""Live exploration of a saved target, reusing the existing scanners.
 
-Tudo aqui é a MESMA superfície que o scanner já toca: lê o que a má-configuração do alvo
-expõe ao anônimo (URL + chave pública já guardadas). Leitura é o padrão; escrita e a criação
-de usuário sintético (para o teste diferencial de RLS) só acontecem sob flag explícita, com o
-mesmo cuidado do CLI. Nada destrutivo, nada de bypass de autenticação.
+Everything here is the SAME surface the scanner already touches: it reads whatever the
+target's misconfiguration exposes to anonymous (URL + public key already stored). Reads
+are the default; writes and synthetic user creation (for the RLS differential test) only
+happen under an explicit flag, with the same care as the CLI. Nothing destructive, no
+authentication bypass.
 """
 
 import json
@@ -16,7 +17,7 @@ from permiscan.adapters.supabase_api import SupabaseApiScanner, rpc_risk
 from permiscan.discovery import COMMON_COLLECTIONS
 
 _TIMEOUT = 15
-# Operadores PostgREST permitidos no query builder (evita injeção de sintaxe arbitrária).
+# PostgREST operators allowed in the query builder (avoids arbitrary syntax injection).
 _OPS = {"eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is", "in", "cs", "cd"}
 
 
@@ -29,7 +30,7 @@ def _get_json(url: str, headers: dict | None = None) -> tuple[int, object]:
     except urllib.error.HTTPError as e:
         body, status = e.read(5_000_000), e.code
     except urllib.error.URLError as e:
-        raise AdapterError(f"falha ao buscar {url}: {e.reason}") from None
+        raise AdapterError(f"failed to fetch {url}: {e.reason}") from None
     try:
         return status, json.loads(body)
     except json.JSONDecodeError:
@@ -39,10 +40,10 @@ def _get_json(url: str, headers: dict | None = None) -> tuple[int, object]:
 def _require(target: dict, *fields: str) -> None:
     for f in fields:
         if not target.get(f):
-            raise AdapterError(f"alvo sem '{f}' — não dá para explorar")
+            raise AdapterError(f"target has no '{f}' — can't explore")
 
 
-# --- Descoberta de recursos exploráveis -------------------------------------
+# --- Discovering explorable resources ---------------------------------------
 
 
 def _evidence_by_rule(target: dict, rule_id: str) -> dict:
@@ -63,13 +64,14 @@ def resources(target: dict) -> dict:
     if plat == "firebase":
         pid = target.get("project_ref")
         url = target.get("url") or ""
-        # Coleções/chaves já confirmadas pelo scan (evidence do finding) vêm primeiro — navegação
-        # direta sem pedir nada ao usuário. COMMON_COLLECTIONS só entra como sugestão extra.
+        # Collections/keys already confirmed by the scan (finding evidence) come first — direct
+        # navigation with nothing to ask the user. COMMON_COLLECTIONS is only an extra suggestion.
         confirmed_cols = list(_evidence_by_rule(target, "firebase-firestore-public-read").get("collections", []))
         rtdb_ev = _evidence_by_rule(target, "firebase-rtdb-public-read")
-        # O nome do bucket NÃO pode ser reconstruído a partir do project_ref: projetos Firebase
-        # criados após 2024 usam "<projeto>.firebasestorage.app", não mais "<projeto>.appspot.com".
-        # O scan original já confirmou o nome real na evidence — reusar, nunca advinhar de novo.
+        # The bucket name can NOT be reconstructed from the project_ref: Firebase projects
+        # created after 2024 use "<project>.firebasestorage.app", not "<project>.appspot.com"
+        # anymore. The original scan already confirmed the real name in the evidence —
+        # reuse it, never guess again.
         storage_ev = _evidence_by_rule(target, "firebase-storage-public-list")
         return {"kind": "firebase", "project": pid,
                 "collections": confirmed_cols or [],
@@ -81,7 +83,7 @@ def resources(target: dict) -> dict:
     return {"kind": "none"}
 
 
-# --- Leitura (read-only) -----------------------------------------------------
+# --- Reads (read-only) --------------------------------------------------------
 
 
 def supabase_rows(target: dict, table: str, *, select: str = "*", filters: list | None = None,
@@ -93,7 +95,7 @@ def supabase_rows(target: dict, table: str, *, select: str = "*", filters: list 
     for f in filters or []:
         op = f.get("op", "eq")
         if op not in _OPS:
-            raise AdapterError(f"operador não permitido: {op}")
+            raise AdapterError(f"operator not allowed: {op}")
         col = urllib.parse.quote(str(f["col"]))
         val = urllib.parse.quote(str(f.get("val", "")), safe="")
         q += f"&{col}={op}.{val}"
@@ -113,7 +115,7 @@ def supabase_rows(target: dict, table: str, *, select: str = "*", filters: list 
 
 
 def _flatten_firestore(fields: dict) -> dict:
-    """{col:{stringValue:x}} -> {col:x}, pegando o primeiro tipo de cada campo."""
+    """{col:{stringValue:x}} -> {col:x}, taking the first type of each field."""
     out = {}
     for k, v in (fields or {}).items():
         out[k] = next(iter(v.values())) if isinstance(v, dict) and v else v
@@ -134,11 +136,11 @@ def firestore_docs(target: dict, collection: str, page: int = 25) -> dict:
 
 
 def rtdb_get(target: dict, path: str = "", shallow: bool = True) -> dict:
-    """shallow=True lista só as chaves do nível (navegação); False traz o valor completo (folha)."""
+    """shallow=True lists only this level's keys (navigation); False returns the full (leaf) value."""
     base = target.get("url") or (target.get("project_ref") and
                                  f"https://{target['project_ref']}-default-rtdb.firebaseio.com")
     if not base:
-        raise AdapterError("alvo sem URL de RTDB")
+        raise AdapterError("target has no RTDB URL")
     path = path.strip("/")
     q = "?shallow=true" if shallow else ""
     url = f"{base.rstrip('/')}/{path}.json{q}"
@@ -147,19 +149,19 @@ def rtdb_get(target: dict, path: str = "", shallow: bool = True) -> dict:
 
 
 def storage_list(target: dict, prefix: str = "", bucket: str | None = None) -> dict:
-    """Lista um "diretório" do bucket. `prefixes` são as subpastas virtuais devolvidas pela API
-    do Firebase Storage — é isso que permite navegar sem o usuário digitar caminho nenhum.
+    """Lists a "directory" of the bucket. `prefixes` are the virtual subfolders returned by the
+    Firebase Storage API — that's what lets the user navigate without typing any path.
 
-    `bucket` deve vir do nome já confirmado em `resources()`/evidence; nunca reconstruído a
-    partir do project_ref — projetos recentes usam "<projeto>.firebasestorage.app", não mais
-    "<projeto>.appspot.com", e advinhar erra silenciosamente (404) nos projetos novos.
+    `bucket` must come from the name already confirmed in `resources()`/evidence; never
+    reconstructed from the project_ref — recent projects use "<project>.firebasestorage.app",
+    not "<project>.appspot.com" anymore, and guessing silently fails (404) on newer projects.
     """
     pid = target.get("project_ref")
     bucket = bucket or _evidence_by_rule(target, "firebase-storage-public-list").get("bucket")
     if not bucket:
         if not pid:
-            raise AdapterError("alvo sem bucket de Storage")
-        bucket = f"{pid}.appspot.com"  # sem evidence salva (alvo antigo) — melhor palpite possível
+            raise AdapterError("target has no Storage bucket")
+        bucket = f"{pid}.appspot.com"  # no saved evidence (older target) — best guess available
     prefix = prefix.strip("/")
     qprefix = f"{prefix}/" if prefix else ""
     url = (f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o"
@@ -177,11 +179,11 @@ def storage_list(target: dict, prefix: str = "", bucket: str | None = None) -> d
             "bucket": bucket, "prefix": prefix}
 
 
-# --- Testes de autorização (gated) ------------------------------------------
+# --- Authorization tests (gated) ---------------------------------------------
 
 
 def supabase_write_test(target: dict, table: str) -> dict:
-    """Reusa o probe de escrita do scanner: POST {} — não destrutivo, inserção vazia."""
+    """Reuses the scanner's write probe: POST {} — non-destructive, empty insert."""
     _require(target, "url", "api_key")
     sc = SupabaseApiScanner(target["url"], target["api_key"])
     result = sc._test_write(table)  # 'inserted'|'allowed'|'blocked'|'unknown'
@@ -190,9 +192,9 @@ def supabase_write_test(target: dict, table: str) -> dict:
 
 
 def _signup_token(target: dict) -> str | None:
-    """Cria um usuário sintético no Supabase Auth e devolve o access_token (role authenticated).
+    """Creates a synthetic user in Supabase Auth and returns the access_token (authenticated role).
 
-    Intrusivo: cria conta no alvo. Só é chamado sob flag explícita (create_test_user)."""
+    Intrusive: creates an account on the target. Only called under an explicit flag (create_test_user)."""
     import secrets
 
     url = f"{target['url'].rstrip('/')}/auth/v1/signup"
@@ -214,10 +216,10 @@ def _signup_token(target: dict) -> str | None:
 
 
 def supabase_diff(target: dict, table: str, *, create_test_user: bool = False) -> dict:
-    """Compara o acesso de leitura a uma tabela entre identidades, para evidenciar falha de RLS.
+    """Compares read access to a table across identities, to evidence an RLS failure.
 
-    Sempre inclui 'anon' (chave pública). Se create_test_user=True, cria um usuário sintético e
-    inclui 'authenticated' — isso cria uma conta no alvo, então fica atrás da flag."""
+    Always includes 'anon' (public key). If create_test_user=True, creates a synthetic user
+    and includes 'authenticated' — this creates an account on the target, so it's gated."""
     _require(target, "url", "api_key")
     sc = SupabaseApiScanner(target["url"], target["api_key"])
     identities = [("anon", {})]
@@ -227,7 +229,7 @@ def supabase_diff(target: dict, table: str, *, create_test_user: bool = False) -
         if token:
             identities.append(("authenticated", {"Authorization": f"Bearer {token}"}))
         else:
-            note = "não foi possível criar usuário sintético (signup fechado?); só 'anon' testado"
+            note = "couldn't create a synthetic user (signup closed?); only 'anon' tested"
 
     out = {}
     for name, extra in identities:

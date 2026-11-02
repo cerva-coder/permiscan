@@ -6,12 +6,12 @@ from permiscan.scope import Target
 
 
 class SupabaseAdapter(PostgresAdapter):
-    """Supabase é PostgreSQL exposto pelo PostgREST: auditamos os papéis que o
-    PostgREST assume para requisições anônimas e autenticadas."""
+    """Supabase is PostgreSQL exposed through PostgREST: we audit the roles that
+    PostgREST assumes for anonymous and authenticated requests."""
 
     provider = "supabase"
     DEFAULT_ROLES = ["anon", "authenticated"]
-    DEFAULT_SCHEMAS = ["public"]  # schema exposto pela Data API por padrão
+    DEFAULT_SCHEMAS = ["public"]  # schema exposed by the Data API by default
 
     def __init__(self, target: Target, roles: list[str] | None = None, schemas: list[str] | None = None):
         super().__init__(target, roles or self.DEFAULT_ROLES, schemas or self.DEFAULT_SCHEMAS)
@@ -20,7 +20,7 @@ class SupabaseAdapter(PostgresAdapter):
         info = super().check()
         if info["missing_roles"]:
             raise AdapterError(
-                f"{self.target.label} não parece um projeto Supabase: papéis ausentes "
+                f"{self.target.label} doesn't look like a Supabase project: missing roles "
                 f"{', '.join(info['missing_roles'])}"
             )
         return info

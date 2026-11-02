@@ -1,4 +1,4 @@
-"""Formato comum de findings, independente do provedor de origem."""
+"""Common finding format, independent of the source provider."""
 
 import hashlib
 from enum import StrEnum
@@ -20,8 +20,8 @@ class Severity(StrEnum):
 
 
 class Confidence(StrEnum):
-    # "confirmed" fica reservado a comportamento observado em teste dinâmico;
-    # análise estática nunca passa de "likely".
+    # "confirmed" is reserved for behavior observed in a dynamic test;
+    # static analysis never goes beyond "likely".
     CONFIRMED = "confirmed"
     LIKELY = "likely"
     POSSIBLE = "possible"
@@ -60,14 +60,14 @@ class Finding(BaseModel):
     owasp: str | None = None
     evidence: dict[str, Any] = {}
     remediation: Remediation
-    # Comando reproduzível (curl/psql/…) que demonstra o problema; vazio quando não há um
-    # passo único e seguro de reprodução.
+    # Reproducible command (curl/psql/…) that demonstrates the issue; empty when there's no
+    # single safe reproduction step.
     poc: str | None = None
     status: str = "open"
 
     @computed_field
     @property
     def fingerprint(self) -> str:
-        """Identidade estável para deduplicação e comparação entre varreduras."""
+        """Stable identity for deduplication and comparison across scans."""
         key = f"{self.provider}|{self.rule_id}|{self.resource}"
         return hashlib.sha256(key.encode()).hexdigest()[:16]

@@ -1,9 +1,9 @@
-"""Análise estática de Firebase Security Rules (Firestore, Storage, Realtime DB).
+"""Static analysis of Firebase Security Rules (Firestore, Storage, Realtime DB).
 
-As regras são um DSL próprio; aqui fazemos análise textual das construções perigosas
-conhecidas, como fazem os linters de regras. Por isso a confiança é no máximo 'likely'
-(para `if true`, que é inequívoco) ou 'possible' (para heurísticas de propriedade).
-A validação de comportamento real fica para o Firebase Emulator (IMPLEMENTATION_PLAN.md, M6).
+The rules are a DSL of their own; here we do textual analysis of known dangerous
+constructs, the same way rules linters do. That's why confidence tops out at
+'likely' (for `if true`, which is unambiguous) or 'possible' (for ownership
+heuristics). Validating real behavior is left to the Firebase Emulator.
 """
 
 import re
@@ -15,14 +15,14 @@ from permiscan.findings import Category, Confidence, Finding, Remediation, Sever
 _DOCS = "https://firebase.google.com/docs/rules/rules-language"
 _DOCS_SECURE = "https://firebase.google.com/docs/firestore/security/get-started"
 
-# allow <ops>: if <cond>;  (cond pode quebrar linha até o ';')
+# allow <ops>: if <cond>;  (cond may span lines up to the ';')
 _ALLOW = re.compile(r"allow\s+([\w\s,]+?)\s*:\s*if\s+(.*?);", re.I | re.S)
 # Realtime Database: ".read": true / ".write": "auth != null"
 _RTDB = re.compile(r'"\.(read|write)"\s*:\s*(true|false|"[^"]*")', re.I)
 
-# A condição se reduz a "sempre verdadeiro"?
+# Does the condition reduce to "always true"?
 _ALWAYS_TRUE = re.compile(r"^\(*\s*true\s*\)*$", re.I)
-# A condição amarra a linha à identidade de quem faz a requisição?
+# Does the condition tie the row to the identity of the requester?
 _OWNERSHIP = re.compile(r"request\.auth\.uid|request\.auth\.token|resource\.data|\buid\b", re.I)
 _AUTH_PRESENT = re.compile(r"request\.auth\s*(!=|==)\s*null|request\.auth\s*!=\s*null", re.I)
 
@@ -41,8 +41,8 @@ def _is_write(ops: list[str]) -> bool:
 
 def analyze_rules(text: str, service: str, source: str) -> list[Finding]:
     findings: list[Finding] = []
-    # Remove comentários: blocos /* */ (multilinha) e depois linhas //  — nessa ordem,
-    # porque // não pode usar DOTALL (engoliria o resto do arquivo).
+    # Strip comments: /* */ blocks (multiline) first, then // lines — in that order,
+    # because // can't use DOTALL (it would swallow the rest of the file).
     stripped = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
     stripped = re.sub(r"//[^\n]*", "", stripped)
 
@@ -62,19 +62,19 @@ def analyze_rules(text: str, service: str, source: str) -> list[Finding]:
                 write = op == "write"
                 add(
                     f"firebase-rtdb-public-{op}",
-                    f"Realtime Database com '.{op}': true",
-                    f"A regra \".{op}\": true libera {'escrita' if write else 'leitura'} para qualquer um, "
-                    "sem autenticação.",
+                    f"Realtime Database with '.{op}': true",
+                    f"The rule \".{op}\": true grants {'write' if write else 'read'} access to anyone, "
+                    "with no authentication.",
                     Severity.CRITICAL if write else Severity.HIGH, Confidence.LIKELY, "CWE-284",
-                    f'Troque ".{op}": true por uma condição que exija auth e propriedade '
-                    "(ex.: \"auth != null && auth.uid === $uid\").",
+                    f'Replace ".{op}": true with a condition that requires auth and ownership '
+                    "(e.g. \"auth != null && auth.uid === $uid\").",
                 )
         return findings
 
-    # Firestore / Storage: analisa cada bloco `allow`.
+    # Firestore / Storage: analyze each `allow` block.
     matches = list(_ALLOW.finditer(stripped))
     if not matches and not _RTDB.search(stripped):
-        raise AdapterError(f"nenhuma regra 'allow' reconhecida em {source}; confira o arquivo e --service")
+        raise AdapterError(f"no 'allow' rule recognized in {source}; check the file and --service")
 
     for m in matches:
         ops = _ops(m.group(1))
@@ -85,22 +85,22 @@ def analyze_rules(text: str, service: str, source: str) -> list[Finding]:
         if _ALWAYS_TRUE.match(cond):
             add(
                 "firebase-rule-public",
-                f"Regra pública (allow {ops_label}: if true)",
-                f"A regra 'allow {ops_label}: if true' concede {'escrita' if write else 'leitura'} a "
-                "qualquer requisição, autenticada ou não. Todo o caminho correspondente fica exposto.",
+                f"Public rule (allow {ops_label}: if true)",
+                f"The rule 'allow {ops_label}: if true' grants {'write' if write else 'read'} access to "
+                "any request, authenticated or not. The whole matching path is exposed.",
                 Severity.CRITICAL if write else Severity.HIGH, Confidence.LIKELY, "CWE-284",
-                "Exija autenticação e vincule o acesso ao dono do recurso "
-                "(ex.: 'if request.auth != null && request.auth.uid == resource.data.ownerId').",
+                "Require authentication and tie access to the resource's owner "
+                "(e.g. 'if request.auth != null && request.auth.uid == resource.data.ownerId').",
             )
         elif write and _AUTH_PRESENT.search(cond) and not _OWNERSHIP.search(cond):
             add(
                 "firebase-rule-any-authenticated-write",
-                f"Escrita liberada a qualquer usuário autenticado (allow {ops_label})",
-                f"A regra 'allow {ops_label}' exige apenas 'request.auth != null': qualquer usuário "
-                "logado pode escrever em recursos de outros, pois não há verificação de propriedade.",
+                f"Write granted to any authenticated user (allow {ops_label})",
+                f"The rule 'allow {ops_label}' only requires 'request.auth != null': any logged-in "
+                "user can write to other users' resources, since there's no ownership check.",
                 Severity.MEDIUM, Confidence.POSSIBLE, "CWE-639",
-                "Adicione verificação de propriedade além de auth != null "
-                "(ex.: 'request.auth.uid == resource.data.ownerId').",
+                "Add an ownership check besides auth != null "
+                "(e.g. 'request.auth.uid == resource.data.ownerId').",
             )
 
     return findings
@@ -120,24 +120,24 @@ class FirebaseAdapter:
     def _detect_service(path: Path, service: str | None) -> str:
         if service:
             if service not in _SERVICE_HINTS:
-                raise AdapterError(f"--service deve ser um de: {', '.join(sorted(set(_SERVICE_HINTS)))}")
+                raise AdapterError(f"--service must be one of: {', '.join(sorted(set(_SERVICE_HINTS)))}")
             return _SERVICE_HINTS[service]
         name = path.name.lower()
         if "storage" in name:
             return "storage"
         if "database" in name or "rtdb" in name:
             return "rtdb"
-        return "firestore"  # arquivo padrão: firestore.rules
+        return "firestore"  # default file: firestore.rules
 
     def check(self) -> dict:
         if not self.path.is_file():
-            raise AdapterError(f"arquivo de regras não encontrado: {self.path}")
+            raise AdapterError(f"rules file not found: {self.path}")
         return {"provider": self.provider, "target": str(self.path), "service": self.service}
 
     def scan(self) -> list[Finding]:
         try:
             text = self.path.read_text(encoding="utf-8")
         except OSError as e:
-            raise AdapterError(f"não foi possível ler {self.path}: {e}") from None
+            raise AdapterError(f"couldn't read {self.path}: {e}") from None
         findings = analyze_rules(text, self.service, self.path.name)
         return sorted(findings, key=lambda f: (f.severity.rank, f.rule_id, f.resource))

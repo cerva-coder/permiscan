@@ -1,7 +1,7 @@
-"""Scan em massa: triagem de uma lista de sites e exploração da lista salva.
+"""Mass scan: triage a list of sites and explore the saved list in depth.
 
-Triagem (nível baixo, rápido, em paralelo) identifica quais sites têm Firebase/Supabase e
-seus endpoints, e salva isso em JSON. Depois a lista salva pode ser explorada a fundo.
+Triage (low level, fast, parallel) identifies which sites have Firebase/Supabase and
+their endpoints, and saves that to JSON. The saved list can then be explored in depth.
 """
 
 import json
@@ -28,7 +28,7 @@ def _record(url: str, result: ReconResult | None, error: str | None) -> dict:
 
 
 def has_resources(rec: dict) -> bool:
-    """Tem backend relevante (ou algum finding) que justifique explorar a fundo?"""
+    """Has a relevant backend (or any finding) that justifies exploring in depth?"""
     return bool(rec.get("firebase_project") or rec.get("supabase") or rec.get("findings"))
 
 
@@ -37,9 +37,9 @@ def survey_many(urls: list[str], level: int = 1, workers: int = 8, progress=None
         try:
             result = Recon(u, level=level).run()
             from permiscan import store
-            store.enroll(result, "triagem")  # alvo vulnerável achado na massa já fica salvo
+            store.enroll(result, "triage")  # a vulnerable target found in the batch is saved right away
             return _record(u, result, None)
-        except Exception as e:  # noqa: BLE001 — um site quebrado não derruba o lote
+        except Exception as e:  # noqa: BLE001 — one broken site shouldn't fail the whole batch
             return _record(u, None, str(e))
 
     records: list[dict] = []
@@ -58,13 +58,13 @@ SCANS_DIR = Path(__file__).resolve().parent.parent / "scans"
 
 
 def list_scans() -> list[Path]:
-    """Scans salvos (001.json, 002.json, …) em ordem numérica."""
+    """Saved scans (001.json, 002.json, …) in numeric order."""
     SCANS_DIR.mkdir(exist_ok=True)
     return sorted(SCANS_DIR.glob("[0-9]*.json"))
 
 
 def next_scan_path() -> Path:
-    """Próximo nome numérico livre em scans/ (001.json, 002.json, …)."""
+    """Next free numeric name under scans/ (001.json, 002.json, …)."""
     nums = [int(p.stem) for p in list_scans() if p.stem.isdigit()]
     return SCANS_DIR / f"{(max(nums) + 1) if nums else 1:03d}.json"
 

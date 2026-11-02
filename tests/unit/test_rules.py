@@ -47,7 +47,7 @@ def test_rls_disabled_severity_follows_effective_privileges():
 def test_rls_disabled_reports_ignored_policies():
     f = only(scan(relations=[rel(privileges={"anon": READ})], policies=[policy(qual="owner = auth.uid()")]))
     assert f.evidence["ignored_policies"] == ["p"]
-    assert "ignoradas" in f.title
+    assert "ignored" in f.title
 
 
 def test_unrestricted_select_is_possible_and_unrestricted_write_is_likely():
