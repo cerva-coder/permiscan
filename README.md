@@ -17,6 +17,45 @@ configuration against the **effective privileges** of the roles the application 
 > URL, or the rules file you point it at). Use it on systems you own or that you have
 > express authorization to assess. See [SECURITY.md](SECURITY.md).
 
+## Quickstart
+
+Nothing installed yet? That's fine — here's the whole path from a clean machine to the
+dashboard open in your browser.
+
+**1. Install [uv](https://docs.astral.sh/uv/)** (a single binary; it also manages Python for
+you, so you don't need Python installed beforehand):
+
+```sh
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**2. Get the code and install dependencies:**
+
+```sh
+git clone https://github.com/cerva-coder/permiscan.git
+cd permiscan
+uv sync
+```
+
+`uv sync` downloads a matching Python 3.12+ on its own if you don't have one — there's
+nothing else to install first.
+
+**3. Run it:**
+
+```sh
+uv run permiscan serve
+```
+
+Opens `http://127.0.0.1:8080` with the dashboard shown below, ready to scan. Or run
+`uv run permiscan` with no arguments for the interactive menu instead.
+
+Docker is only needed for the optional [local lab](#local-lab) used to test the PostgreSQL
+rules — not for scanning or the web platform.
+
 ## What this is for
 
 Most scanners stop at "found a misconfigured Supabase table" and leave you to write curl
@@ -73,14 +112,6 @@ directly — both intrusive probes, off by default.
 The Data API scan observes real behavior (`confirmed` confidence); catalog and rules
 analysis is static (confidence tops out at `likely`). Dynamic database validation with
 synthetic identities doesn't exist yet.
-
-## Installation
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
-
-```sh
-uv sync
-```
 
 ## Usage
 

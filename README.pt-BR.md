@@ -17,6 +17,45 @@ com os **privilégios efetivos** dos papéis que a aplicação expõe.
 > projeto ou o arquivo de regras que você indica). Use-o em sistemas que são seus ou que
 > você tem autorização expressa para avaliar. Veja [SECURITY.md](SECURITY.md).
 
+## Começando do zero
+
+Não tem nada instalado ainda? Sem problema — esse é o caminho completo de uma máquina
+limpa até o dashboard aberto no navegador.
+
+**1. Instale o [uv](https://docs.astral.sh/uv/)** (um binário único; ele também gerencia o
+Python pra você, então não precisa ter Python instalado antes):
+
+```sh
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**2. Baixe o código e instale as dependências:**
+
+```sh
+git clone https://github.com/cerva-coder/permiscan.git
+cd permiscan
+uv sync
+```
+
+O `uv sync` baixa um Python 3.12+ compatível sozinho, caso você não tenha um — não tem mais
+nada pra instalar antes disso.
+
+**3. Rode:**
+
+```sh
+uv run permiscan serve
+```
+
+Abre `http://127.0.0.1:8080` com o dashboard mostrado abaixo, pronto pra escanear. Ou rode
+`uv run permiscan` sem argumentos pro menu interativo.
+
+O Docker só é necessário para o [laboratório local](#laboratório-local) opcional, usado pra
+testar as regras de PostgreSQL — não é preciso pra escanear nem pra usar a plataforma web.
+
 ## Pra que serve
 
 A maioria dos scanners para em "achei uma tabela do Supabase mal configurada" e deixa você
@@ -74,14 +113,6 @@ de RLS diretamente — os dois testes são intrusivos e vêm desligados por padr
 A varredura pela Data API observa comportamento real (confiança `confirmed`); a análise de
 catálogo e de regras é estática (confiança no máximo `likely`). A validação dinâmica do
 banco com identidades sintéticas ainda não existe.
-
-## Instalação
-
-Requer Python 3.12+ e [uv](https://docs.astral.sh/uv/).
-
-```sh
-uv sync
-```
 
 ## Uso
 
