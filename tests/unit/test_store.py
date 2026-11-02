@@ -49,6 +49,20 @@ def test_status_identificado_sem_confirmacao(tmp_path):
     assert store.get_target(tid, path=db)["status"] == store.STATUS_IDENTIFIED
 
 
+def test_confirmado_exige_severidade_alta_nao_so_confidence(tmp_path):
+    """Finding confirmado mas leve (medium/low) não deve marcar o alvo como vuln_confirmado —
+    senão a tag acende pra achado sem gravidade nenhuma."""
+    db = tmp_path / "t.db"
+    r = _supabase_result()
+    f = _finding("supabase-api-anon-read", "rest/v1/u", conf=Confidence.CONFIRMED)
+    object.__setattr__(f, "severity", Severity.MEDIUM)
+    object.__setattr__(r, "findings", [f])
+    tid = store.enroll(r, path=db)[0]
+    t = store.get_target(tid, path=db)
+    assert t["status"] == store.STATUS_IDENTIFIED
+    assert store.stats(path=db)["confirmed_targets"] == 0
+
+
 def test_status_manual_preservado_no_rescan(tmp_path):
     db = tmp_path / "t.db"
     tid = store.enroll(_supabase_result(), path=db)[0]

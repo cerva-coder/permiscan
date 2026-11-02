@@ -45,6 +45,13 @@ def _require(target: dict, *fields: str) -> None:
 # --- Descoberta de recursos exploráveis -------------------------------------
 
 
+def _evidence_by_rule(target: dict, rule_id: str) -> dict:
+    for f in target.get("findings") or []:
+        if f.get("rule_id") == rule_id:
+            return f.get("evidence") or {}
+    return {}
+
+
 def resources(target: dict) -> dict:
     plat = target["platform"]
     if plat == "supabase":
@@ -56,11 +63,21 @@ def resources(target: dict) -> dict:
     if plat == "firebase":
         pid = target.get("project_ref")
         url = target.get("url") or ""
+        # Coleções/chaves já confirmadas pelo scan (evidence do finding) vêm primeiro — navegação
+        # direta sem pedir nada ao usuário. COMMON_COLLECTIONS só entra como sugestão extra.
+        confirmed_cols = list(_evidence_by_rule(target, "firebase-firestore-public-read").get("collections", []))
+        rtdb_ev = _evidence_by_rule(target, "firebase-rtdb-public-read")
+        # O nome do bucket NÃO pode ser reconstruído a partir do project_ref: projetos Firebase
+        # criados após 2024 usam "<projeto>.firebasestorage.app", não mais "<projeto>.appspot.com".
+        # O scan original já confirmou o nome real na evidence — reusar, nunca advinhar de novo.
+        storage_ev = _evidence_by_rule(target, "firebase-storage-public-list")
         return {"kind": "firebase", "project": pid,
-                "collections": list(COMMON_COLLECTIONS),
-                "rtdb": url if "firebaseio" in url or "firebasedatabase" in url else (
-                    f"https://{pid}-default-rtdb.firebaseio.com" if pid else None),
-                "bucket": (target.get("project_ref") and f"{pid}.appspot.com") or None}
+                "collections": confirmed_cols or [],
+                "collections_suggested": [c for c in COMMON_COLLECTIONS if c not in confirmed_cols],
+                "rtdb_keys": rtdb_ev.get("top_level_keys", []),
+                "rtdb": (bool(rtdb_ev) and (url if "firebaseio" in url or "firebasedatabase" in url else (
+                    f"https://{pid}-default-rtdb.firebaseio.com" if pid else None))) or None,
+                "bucket": storage_ev.get("bucket")}
     return {"kind": "none"}
 
 
@@ -116,31 +133,48 @@ def firestore_docs(target: dict, collection: str, page: int = 25) -> dict:
     return {"status": status, "rows": docs, "count": len(docs)}
 
 
-def rtdb_get(target: dict, path: str = "") -> dict:
+def rtdb_get(target: dict, path: str = "", shallow: bool = True) -> dict:
+    """shallow=True lista só as chaves do nível (navegação); False traz o valor completo (folha)."""
     base = target.get("url") or (target.get("project_ref") and
                                  f"https://{target['project_ref']}-default-rtdb.firebaseio.com")
     if not base:
         raise AdapterError("alvo sem URL de RTDB")
     path = path.strip("/")
-    url = f"{base.rstrip('/')}/{path}.json" if path else f"{base.rstrip('/')}/.json?shallow=true"
+    q = "?shallow=true" if shallow else ""
+    url = f"{base.rstrip('/')}/{path}.json{q}"
     status, data = _get_json(url)
-    return {"status": status, "data": data, "path": "/" + path}
+    return {"status": status, "data": data, "path": "/" + path, "shallow": shallow}
 
 
-def storage_list(target: dict, prefix: str = "") -> dict:
+def storage_list(target: dict, prefix: str = "", bucket: str | None = None) -> dict:
+    """Lista um "diretório" do bucket. `prefixes` são as subpastas virtuais devolvidas pela API
+    do Firebase Storage — é isso que permite navegar sem o usuário digitar caminho nenhum.
+
+    `bucket` deve vir do nome já confirmado em `resources()`/evidence; nunca reconstruído a
+    partir do project_ref — projetos recentes usam "<projeto>.firebasestorage.app", não mais
+    "<projeto>.appspot.com", e advinhar erra silenciosamente (404) nos projetos novos.
+    """
     pid = target.get("project_ref")
-    if not pid:
-        raise AdapterError("alvo sem bucket de Storage")
-    bucket = f"{pid}.appspot.com"
+    bucket = bucket or _evidence_by_rule(target, "firebase-storage-public-list").get("bucket")
+    if not bucket:
+        if not pid:
+            raise AdapterError("alvo sem bucket de Storage")
+        bucket = f"{pid}.appspot.com"  # sem evidence salva (alvo antigo) — melhor palpite possível
+    prefix = prefix.strip("/")
+    qprefix = f"{prefix}/" if prefix else ""
     url = (f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o"
-           f"?maxResults=100&prefix={urllib.parse.quote(prefix, safe='')}")
+           f"?maxResults=200&delimiter=/&prefix={urllib.parse.quote(qprefix, safe='/')}")
     status, data = _get_json(url)
-    items = []
+    items, prefixes = [], []
     if isinstance(data, dict):
         for it in data.get("items", []):
             items.append({"name": it.get("name"), "size": it.get("size"),
-                          "contentType": it.get("contentType"), "updated": it.get("updated")})
-    return {"status": status, "rows": items, "count": len(items), "bucket": bucket}
+                          "contentType": it.get("contentType"), "updated": it.get("updated"),
+                          "url": f"https://firebasestorage.googleapis.com/v0/b/{bucket}/o/"
+                                 f"{urllib.parse.quote(it.get('name', ''), safe='')}?alt=media"})
+        prefixes = [p.rstrip("/") for p in data.get("prefixes", [])]
+    return {"status": status, "rows": items, "prefixes": prefixes, "count": len(items),
+            "bucket": bucket, "prefix": prefix}
 
 
 # --- Testes de autorização (gated) ------------------------------------------

@@ -133,7 +133,9 @@ def _finding_identity(finding, targets: dict[str, dict], result: "ReconResult") 
 def _status_for(existing: str | None, findings) -> str:
     if existing in _MANUAL_STATUS:
         return existing  # transição manual não é sobrescrita por re-scan
-    confirmed = any(f.confidence.value == "confirmed" for f in findings)
+    # "confirmado" exige confidence=confirmed E severidade crítica/alta — do contrário quase
+    # todo achado (RLS desabilitado em tabela irrelevante, etc.) acendia a tag sem nada grave.
+    confirmed = any(f.confidence.value == "confirmed" and f.severity.rank <= 1 for f in findings)
     return STATUS_CONFIRMED if confirmed else STATUS_IDENTIFIED
 
 
@@ -208,7 +210,8 @@ def stats(path: Path | str = DB_PATH) -> dict:
         by_status = {r["status"]: r["n"] for r in
                      conn.execute("SELECT status, COUNT(*) n FROM targets GROUP BY status")}
         confirmed = conn.execute(
-            "SELECT COUNT(DISTINCT target_id) n FROM findings WHERE confidence='confirmed'").fetchone()["n"]
+            "SELECT COUNT(DISTINCT target_id) n FROM findings "
+            "WHERE confidence='confirmed' AND severity IN ('critical','high')").fetchone()["n"]
         return {
             "targets": conn.execute("SELECT COUNT(*) n FROM targets").fetchone()["n"],
             "findings": conn.execute("SELECT COUNT(*) n FROM findings").fetchone()["n"],

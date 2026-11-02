@@ -12,11 +12,55 @@ import html as _html
 import json
 import re
 import threading
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from permiscan import explore, store
+
+# ponytail: progresso de scan em massa só em memória (dict simples); reinício do servidor
+# perde o job em andamento — aceitável pra ferramenta local de um usuário só.
+_JOBS: dict[str, dict] = {}
+
+
+def scan_one(url: str, level: int = 2) -> int:
+    """Scan individual disparado pela web. Retorna o nº de findings."""
+    from permiscan.discovery import Recon
+
+    url = url.strip()
+    if not url:
+        raise ValueError("informe uma URL")
+    result = Recon(url, level=min(max(level, 1), 3)).run()
+    store.enroll(result, source="web-individual")
+    return len(result.findings)
+
+
+def start_mass_scan(urls: list[str], level: int = 1) -> str:
+    """Dispara a triagem em massa (mesmo motor do CLI) numa thread e devolve um job_id p/ polling."""
+    from permiscan.survey import has_resources, next_scan_path, save_survey, survey_many
+
+    job_id = uuid.uuid4().hex[:8]
+    _JOBS[job_id] = {"total": len(urls), "done": 0, "found": 0, "finished": False, "error": None}
+
+    def progress(i, _total, rec):
+        _JOBS[job_id]["done"] = i
+        if has_resources(rec):
+            _JOBS[job_id]["found"] += 1
+
+    def run():
+        try:
+            records = survey_many(urls, level=min(max(level, 1), 3), progress=progress)
+            path = next_scan_path()
+            save_survey(records, path)
+            _JOBS[job_id]["file"] = path.name
+        except Exception as e:  # noqa: BLE001 — job em background: erro vai pro status, não derruba nada
+            _JOBS[job_id]["error"] = str(e)
+        finally:
+            _JOBS[job_id]["finished"] = True
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
 
 
 def rescan(target: dict, level: int = 2) -> int:
@@ -56,6 +100,21 @@ def _handle_api(path: str, method: str, body: dict) -> tuple[int, dict]:
         return 200, store.stats()
     if parts == ["api", "targets"]:
         return 200, {"targets": store.list_targets()}
+    if parts == ["api", "scan"] and method == "POST":
+        try:
+            n = scan_one(body.get("url", ""), int(body.get("level", 2)))
+        except Exception as e:  # noqa: BLE001 — erro de scan vira resposta, não 500
+            return 502, {"error": str(e)}
+        return 200, {"ok": True, "findings": n}
+    if parts == ["api", "scan", "mass"] and method == "POST":
+        urls = [u.strip() for u in body.get("urls", []) if u and u.strip()]
+        if not urls:
+            return 400, {"error": "informe ao menos uma URL"}
+        job_id = start_mass_scan(urls, int(body.get("level", 1)))
+        return 200, {"job_id": job_id, "total": len(urls)}
+    if len(parts) == 4 and parts[:3] == ["api", "scan", "mass"]:
+        job = _JOBS.get(parts[3])
+        return (200, job) if job else (404, {"error": "job desconhecido"})
     if len(parts) >= 3 and parts[0] == "api" and parts[1] == "targets" and parts[2].isdigit():
         tid = int(parts[2])
         sub = parts[3] if len(parts) > 3 else None
@@ -103,9 +162,9 @@ def _rows(t: dict, body: dict) -> dict:
     if kind == "firestore":
         return explore.firestore_docs(t, body["resource"])
     if kind == "rtdb":
-        return explore.rtdb_get(t, body.get("path", ""))
+        return explore.rtdb_get(t, body.get("path", ""), shallow=body.get("shallow", True))
     if kind == "storage":
-        return explore.storage_list(t, body.get("prefix", ""))
+        return explore.storage_list(t, body.get("prefix", ""), bucket=body.get("bucket"))
     return {"error": f"tipo desconhecido: {kind}"}
 
 
@@ -271,6 +330,17 @@ pre{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:10
 white-space:pre-wrap;word-break:break-all;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#c9d1d9}
 .mut{color:var(--mut)}.hide{display:none}.right{margin-left:auto}
 .hist li{color:var(--mut);font-size:13px}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.chip{background:#21262d;border:1px solid var(--line);color:var(--fg);border-radius:999px;
+  padding:5px 12px;font-size:13px;cursor:pointer}
+.chip:hover{border-color:var(--acc)}.chip.on{background:var(--acc);color:#0d1117;border-color:var(--acc);font-weight:600}
+.chip.folder::before{content:"📁 "}.chip.sugg{opacity:.6;border-style:dashed}
+.crumbs{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin:6px 0;font-size:13px}
+.crumbs a{color:var(--acc)}.crumbs span{color:var(--mut)}
+.tblwrap{overflow:auto;max-height:55vh;border:1px solid var(--line);border-radius:8px;margin-top:8px}
+.tblwrap table{margin-top:0}.tblwrap th{position:sticky;top:0;background:var(--panel)}
+.bar{height:6px;background:#21262d;border-radius:4px;overflow:hidden;margin:6px 0}
+.bar i{display:block;height:100%;background:var(--acc)}
 @media(max-width:560px){th:nth-child(3),td:nth-child(3){display:none}}
 </style></head>
 <body>
@@ -283,7 +353,18 @@ const api=(p,m,b)=>fetch(p,{method:m||'GET',headers:{'Content-Type':'application
   body:b?JSON.stringify(b):undefined}).then(r=>r.json())
 const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
 const sev=(s)=>`<span class="pill s-${s}">${s}</span>`
+const fmtTs=(iso)=>iso?iso.slice(0,16).replace('T',' '):'—'
 const STATUS=["identificado","vuln_confirmado","parcialmente_exploravel","exploracao_validada","corrigido","arquivado"]
+
+async function pollMassScan(jobId,onMsg){
+  while(true){
+    const j=await api('/api/scan/mass/'+jobId)
+    if(j.error){onMsg('erro: '+j.error,true);return}
+    onMsg(`${j.done}/${j.total} site(s) · ${j.found} com recursos`,j.finished,j.done/Math.max(1,j.total))
+    if(j.finished)return
+    await new Promise(r=>setTimeout(r,1200))
+  }
+}
 
 async function dashboard(){
   const [st,{targets}]=await Promise.all([api('/api/stats'),api('/api/targets')])
@@ -294,23 +375,71 @@ async function dashboard(){
     <div class="card"><h3>Findings</h3><div class="big">${st.findings}</div></div>
     <div class="card"><h3>Plataformas</h3><div>${Object.entries(st.by_platform).map(([k,v])=>`<span class="tag">${k}: ${v}</span>`).join(' ')||'—'}</div></div>
   </div>`))
+
+  // --- Novo scan, tudo pela web (sem CLI) ---
+  const scanCard=$(`<div class="card" style="margin-top:12px">
+    <h3>Novo scan</h3>
+    <div class="row">
+      <input id="su" placeholder="https://alvo.com" style="flex:1;min-width:200px">
+      <select id="sl" title="nível"><option value="1">nível 1 · mínimo</option><option value="2" selected>nível 2 · médio</option><option value="3">nível 3 · máximo</option></select>
+      <button class="pri" id="sgo">scanear</button>
+      <button id="smass">scan em massa…</button>
+    </div>
+    <textarea id="smurls" class="hide" placeholder="uma URL por linha" style="width:100%;min-height:70px;margin-top:8px"></textarea>
+    <div class="row hide" id="smrow"><button class="pri" id="smgo">rodar scan em massa</button></div>
+    <div id="smsg" class="mut" style="margin-top:6px"></div>
+    <div class="bar hide" id="sbar"><i style="width:0%"></i></div>
+  </div>`)
+  app.append(scanCard)
+  const smsg=scanCard.querySelector('#smsg'),sbar=scanCard.querySelector('#sbar')
+  scanCard.querySelector('#smass').onclick=()=>{
+    scanCard.querySelector('#smurls').classList.toggle('hide')
+    scanCard.querySelector('#smrow').classList.toggle('hide')
+  }
+  scanCard.querySelector('#sgo').onclick=async(e)=>{
+    const url=scanCard.querySelector('#su').value.trim()
+    if(!url)return
+    e.target.disabled=true;smsg.textContent='scaneando…'
+    const res=await api('/api/scan','POST',{url,level:+scanCard.querySelector('#sl').value})
+    e.target.disabled=false
+    smsg.textContent=res.error?('erro: '+res.error):`ok · ${res.findings} finding(s)`
+    if(!res.error)dashboard()
+  }
+  scanCard.querySelector('#smgo').onclick=async(e)=>{
+    const urls=scanCard.querySelector('#smurls').value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean)
+    if(!urls.length)return
+    e.target.disabled=true;sbar.classList.remove('hide');sbar.querySelector('i').style.width='0%'
+    const res=await api('/api/scan/mass','POST',{urls,level:+scanCard.querySelector('#sl').value})
+    if(res.error){smsg.textContent='erro: '+res.error;e.target.disabled=false;return}
+    await pollMassScan(res.job_id,(txt,done,frac)=>{
+      smsg.textContent=txt;sbar.querySelector('i').style.width=(100*(frac||0))+'%'
+      if(done){e.target.disabled=false;sbar.classList.add('hide');dashboard()}
+    })
+  }
+
   const bar=$(`<div class="row"><input id="q" placeholder="filtrar por url/ref…" style="flex:1;min-width:160px">
     <select id="fp"><option value="">plataforma</option><option>supabase</option><option>firebase</option><option>site</option></select>
-    <select id="fs"><option value="">status</option>${STATUS.map(s=>`<option>${s}</option>`).join('')}</select></div>`)
+    <select id="fs"><option value="">status</option>${STATUS.map(s=>`<option>${s}</option>`).join('')}</select>
+    <label class="mut"><input type="checkbox" id="fc"> só crít./alto</label>
+    <select id="so"><option value="recent">mais recentes</option><option value="findings">mais findings</option><option value="sev">mais graves</option></select></div>`)
   app.append(bar)
   const wrap=$('<div></div>');app.append(wrap)
   const draw=()=>{
     const q=(document.getElementById('q').value||'').toLowerCase()
     const fp=document.getElementById('fp').value,fs=document.getElementById('fs').value
-    const rows=targets.filter(t=>(!fp||t.platform==fp)&&(!fs||t.status==fs)&&
+    const fc=document.getElementById('fc').checked,so=document.getElementById('so').value
+    let rows=targets.filter(t=>(!fp||t.platform==fp)&&(!fs||t.status==fs)&&(!fc||t.crit||t.high)&&
       (!q||(t.url||'').toLowerCase().includes(q)||(t.project_ref||'').toLowerCase().includes(q)))
-    wrap.innerHTML=rows.length?`<table><thead><tr><th>alvo</th><th>plataforma</th><th>status</th><th>crít/alto</th><th>findings</th><th>visto</th></tr></thead><tbody>
+    rows=[...rows].sort((a,b)=>so==='findings'?b.findings-a.findings:
+      so==='sev'?((b.crit||0)*10+(b.high||0))-((a.crit||0)*10+(a.high||0)):
+      (b.last_seen||'').localeCompare(a.last_seen||''))
+    wrap.innerHTML=rows.length?`<div class="tblwrap"><table><thead><tr><th>alvo</th><th>plataforma</th><th>status</th><th>crít/alto</th><th>findings</th><th>visto</th></tr></thead><tbody>
       ${rows.map(t=>`<tr class="clk" onclick="location.hash='#/t/${t.id}'">
         <td><b>${esc(t.project_ref||t.url)}</b><br><span class="mut">${esc(t.url||'')}</span></td>
         <td><span class="tag">${t.platform}</span></td><td>${esc(t.status)}</td>
         <td>${t.crit?`<span class="pill s-critical">${t.crit}</span> `:''}${t.high?`<span class="pill s-high">${t.high}</span>`:''}</td>
-        <td>${t.findings}</td><td class="mut">${(t.last_seen||'').slice(0,10)}</td></tr>`).join('')}
-      </tbody></table>`:'<p class="mut">Nenhum alvo ainda. Rode um scan (menu ou CLI) para popular.</p>'
+        <td>${t.findings}</td><td class="mut">${fmtTs(t.last_seen)}</td></tr>`).join('')}
+      </tbody></table></div>`:'<p class="mut">Nenhum alvo ainda. Rode um scan acima para popular.</p>'
   }
   draw();bar.querySelectorAll('input,select').forEach(e=>e.oninput=draw)
 }
@@ -319,8 +448,16 @@ const rowsTable=(rows)=>{
   if(!rows||!rows.length)return '<p class="mut">0 registros.</p>'
   const cols=[...new Set(rows.flatMap(r=>Object.keys(r)))].slice(0,14)
   const cell=(v)=>esc(v&&typeof v==='object'?JSON.stringify(v):v)
-  return `<div style="overflow:auto"><table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>
+  return `<div class="tblwrap"><table><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>
     ${rows.map(r=>`<tr>${cols.map(c=>`<td>${cell(r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
+}
+
+const filesTable=(files)=>{
+  if(!files.length)return '<p class="mut">pasta vazia.</p>'
+  return `<div class="tblwrap"><table><thead><tr><th>arquivo</th><th>tamanho</th><th>tipo</th><th>atualizado</th><th></th></tr></thead><tbody>
+    ${files.map(f=>`<tr><td>${esc(f.name)}</td><td>${esc(f.size)}</td><td>${esc(f.contentType)}</td>
+      <td>${esc(fmtTs(f.updated))}</td><td><a href="${esc(f.url)}" target="_blank" rel="noopener">abrir</a></td></tr>`).join('')}
+    </tbody></table></div>`
 }
 
 async function workspace(id){
@@ -377,40 +514,106 @@ async function workspace(id){
     const r=await api('/api/targets/'+id+'/resources')
     if(r.error){pane.innerHTML=`<p class="mut">${esc(r.error)}</p>`;return}
     pane.innerHTML=''
-    const out=$('<div style="margin-top:12px"></div>')
-    const show=(res)=>{out.innerHTML=res.error?`<p class="mut">erro: ${esc(res.error)}</p>`:
-      `<div class="mut">status ${res.status??''} ${res.count!=null?'· '+res.count+' no total':''}</div>`+
-      (res.data!==undefined?`<pre>${esc(JSON.stringify(res.data,null,2))}</pre>`:rowsTable(res.rows))}
+
     if(r.kind==='supabase'){
-      pane.append($(`<div class="card"><h3>Query builder — Supabase</h3>
-        <div class="row"><select id="tbl">${r.tables.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
-        <input id="sel" value="*" title="colunas (select)" style="width:120px">
+      const out=$('<div style="margin-top:8px"></div>')
+      const chips=$(`<div class="chips">${r.tables.map(t=>`<span class="chip" data-t="${esc(t)}">${esc(t)}</span>`).join('')}</div>`)
+      pane.append($(`<div class="card"><h3>Tabelas <span class="mut" style="font-weight:400">· clique para navegar</span></h3></div>`))
+      pane.lastChild.append(chips)
+      pane.append($(`<div class="card" style="margin-top:10px">
+        <div class="row"><select id="tbl" style="flex:1">${r.tables.map(x=>`<option>${esc(x)}</option>`).join('')}</select>
+        <input id="sel" value="*" title="colunas (select)" style="width:110px">
         <input id="ord" placeholder="order (ex: id.desc)" style="width:140px">
         <input id="lim" type="number" value="50" style="width:70px"><input id="off" type="number" value="0" style="width:70px"></div>
-        <div class="row"><input id="fc" placeholder="coluna"><select id="fo">${["eq","neq","gt","gte","lt","lte","like","ilike","is","in"].map(o=>`<option>${o}</option>`).join('')}</select>
-        <input id="fv" placeholder="valor"><button class="pri" id="go">consultar</button></div></div>`))
+        <div class="row"><input id="fc" placeholder="coluna (opcional)"><select id="fo">${["eq","neq","gt","gte","lt","lte","like","ilike","is","in"].map(o=>`<option>${o}</option>`).join('')}</select>
+        <input id="fv" placeholder="valor"><button class="pri" id="go">consultar</button></div>
+        ${r.rpcs.length?`<div class="mut" style="margin-top:8px">RPCs expostas (chame só na aba "Testes de autorização"): ${
+          r.rpcs.map(x=>`<span class="tag">${esc(x.name)} · ${esc(x.risk)}</span>`).join(' ')}</div>`:''}</div>`))
       pane.append(out)
-      document.getElementById('go').onclick=async()=>{
+      const run=async()=>{
         out.innerHTML='<p class="mut">consultando…</p>'
-        const filters=document.getElementById('fc').value?[{col:document.getElementById('fc').value,op:document.getElementById('fo').value,val:document.getElementById('fv').value}]:[]
-        show(await api('/api/targets/'+id+'/rows','POST',{type:'supabase_table',resource:document.getElementById('tbl').value,
+        const fc=document.getElementById('fc').value
+        const filters=fc?[{col:fc,op:document.getElementById('fo').value,val:document.getElementById('fv').value}]:[]
+        const res=await api('/api/targets/'+id+'/rows','POST',{type:'supabase_table',resource:document.getElementById('tbl').value,
           select:document.getElementById('sel').value,order:document.getElementById('ord').value||null,
-          limit:+document.getElementById('lim').value,offset:+document.getElementById('off').value,filters}))
+          limit:+document.getElementById('lim').value,offset:+document.getElementById('off').value,filters})
+        out.innerHTML=res.error?`<p class="mut">erro: ${esc(res.error)}</p>`:
+          `<div class="mut">${res.count!=null?res.count+' no total':''}</div>`+rowsTable(res.rows)
       }
-    } else if(r.kind==='firebase'){
-      pane.append($(`<div class="card"><h3>Firestore</h3><div class="row">
-        <input id="col" list="cols" placeholder="coleção" value="${esc(r.collections[0]||'')}">
-        <datalist id="cols">${r.collections.map(c=>`<option>${esc(c)}</option>`).join('')}</datalist>
-        <button class="pri" id="gfs">ler documentos</button></div></div>`))
-      if(r.rtdb)pane.append($(`<div class="card" style="margin-top:10px"><h3>Realtime Database</h3><div class="row">
-        <input id="rp" placeholder="caminho (vazio = raiz)" style="flex:1"><button class="pri" id="grt">ler nó</button></div></div>`))
-      if(r.bucket)pane.append($(`<div class="card" style="margin-top:10px"><h3>Storage · ${esc(r.bucket)}</h3><div class="row">
-        <input id="pre" placeholder="prefixo" style="flex:1"><button class="pri" id="gst">listar objetos</button></div></div>`))
-      pane.append(out)
-      document.getElementById('gfs').onclick=async()=>{out.innerHTML='…';show(await api('/api/targets/'+id+'/rows','POST',{type:'firestore',resource:document.getElementById('col').value}))}
-      if(r.rtdb)document.getElementById('grt').onclick=async()=>{out.innerHTML='…';show(await api('/api/targets/'+id+'/rows','POST',{type:'rtdb',path:document.getElementById('rp').value}))}
-      if(r.bucket)document.getElementById('gst').onclick=async()=>{out.innerHTML='…';show(await api('/api/targets/'+id+'/rows','POST',{type:'storage',prefix:document.getElementById('pre').value}))}
-    } else pane.innerHTML='<p class="mut">Este alvo não tem recurso explorável (sem chave pública salva).</p>'
+      chips.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{
+        chips.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));c.classList.add('on')
+        document.getElementById('tbl').value=c.dataset.t;document.getElementById('fc').value='';run()
+      })
+      document.getElementById('go').onclick=run
+      document.getElementById('tbl').onchange=run
+      if(chips.firstChild)chips.firstChild.classList.add('on')
+      run()  // primeira tabela já carrega sozinha — nada pra digitar
+      return
+    }
+
+    if(r.kind!=='firebase'){pane.innerHTML='<p class="mut">Este alvo não tem recurso explorável (sem chave pública salva).</p>';return}
+    if(!r.collections.length && !r.rtdb && !r.bucket){
+      pane.innerHTML='<p class="mut">Nenhuma coleção, RTDB ou bucket confirmados como públicos neste alvo ainda.</p>';return
+    }
+
+    // --- Firestore: coleções confirmadas primeiro (sólidas), sugestões por nome comum depois ---
+    const allCols=[...r.collections.map(c=>({name:c,sugg:false})),...r.collections_suggested.map(c=>({name:c,sugg:true}))]
+    if(allCols.length){
+      const outFs=$('<div style="margin-top:8px"></div>')
+      const chips=$(`<div class="chips">${allCols.map(c=>`<span class="chip${c.sugg?' sugg':''}" data-c="${esc(c.name)}" title="${c.sugg?'não confirmada — tentativa':'confirmada no scan'}">${esc(c.name)}</span>`).join('')}</div>`)
+      pane.append($(`<div class="card"><h3>Firestore</h3><div class="mut">clique numa coleção para ler os documentos ${r.collections.length?'':'(nenhuma confirmada — tentando nomes comuns)'}</div></div>`))
+      pane.lastChild.append(chips);pane.append(outFs)
+      const loadCol=(name)=>{
+        chips.querySelectorAll('.chip').forEach(x=>x.classList.toggle('on',x.dataset.c===name))
+        outFs.innerHTML='<p class="mut">carregando…</p>'
+        api('/api/targets/'+id+'/rows','POST',{type:'firestore',resource:name}).then(res=>{
+          outFs.innerHTML=res.error?`<p class="mut">erro: ${esc(res.error)}</p>`:`<div class="mut">${res.count} documento(s)</div>`+rowsTable(res.rows)
+        })
+      }
+      chips.querySelectorAll('.chip').forEach(c=>c.onclick=()=>loadCol(c.dataset.c))
+      loadCol(allCols[0].name)  // auto-abre a primeira
+    }
+
+    // --- Realtime Database: navega por chaves (shallow), sem precisar digitar caminho ---
+    if(r.rtdb){
+      let path=[]
+      const outRt=$('<div style="margin-top:8px"></div>')
+      pane.append($(`<div class="card" style="margin-top:10px"><h3>Realtime Database</h3></div>`))
+      pane.lastChild.append(outRt)
+      const loadRt=async()=>{
+        outRt.innerHTML='<p class="mut">carregando…</p>'
+        const res=await api('/api/targets/'+id+'/rows','POST',{type:'rtdb',path:path.join('/'),shallow:true})
+        if(res.error){outRt.innerHTML=`<p class="mut">erro: ${esc(res.error)}</p>`;return}
+        const crumbs=`<div class="crumbs"><a data-i="-1">raiz</a>${path.map((p,i)=>` / <a data-i="${i}">${esc(p)}</a>`).join('')}</div>`
+        const data=res.data,keys=data&&typeof data==='object'?Object.keys(data):null
+        const body=keys?(keys.length?`<div class="chips">${keys.map(k=>`<span class="chip folder" data-k="${esc(k)}">${esc(k)}</span>`).join('')}</div>`:'<p class="mut">nó vazio.</p>')
+          :`<pre>${esc(JSON.stringify(data))}</pre>`
+        outRt.innerHTML=crumbs+body
+        outRt.querySelectorAll('.crumbs a').forEach(a=>a.onclick=()=>{path=path.slice(0,+a.dataset.i+1);loadRt()})
+        outRt.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{path=[...path,c.dataset.k];loadRt()})
+      }
+      loadRt()  // raiz carrega sozinha
+    }
+
+    // --- Storage: pastas (prefixes) e arquivos navegáveis, sem digitar prefixo ---
+    if(r.bucket){
+      let prefix=''
+      const outSt=$('<div style="margin-top:8px"></div>')
+      pane.append($(`<div class="card" style="margin-top:10px"><h3>Storage · ${esc(r.bucket)}</h3></div>`))
+      pane.lastChild.append(outSt)
+      const loadSt=async()=>{
+        outSt.innerHTML='<p class="mut">carregando…</p>'
+        const res=await api('/api/targets/'+id+'/rows','POST',{type:'storage',prefix,bucket:r.bucket})
+        if(res.error){outSt.innerHTML=`<p class="mut">erro: ${esc(res.error)}</p>`;return}
+        const segs=prefix?prefix.split('/'):[]
+        const crumbs=`<div class="crumbs"><a data-p="">raiz</a>${segs.map((s,i)=>` / <a data-p="${esc(segs.slice(0,i+1).join('/'))}">${esc(s)}</a>`).join('')}</div>`
+        const folders=res.prefixes.length?`<div class="chips">${res.prefixes.map(p=>`<span class="chip folder" data-p="${esc(p)}">${esc(p.split('/').pop())}</span>`).join('')}</div>`:''
+        outSt.innerHTML=crumbs+folders+filesTable(res.rows)
+        outSt.querySelectorAll('.crumbs a').forEach(a=>a.onclick=()=>{prefix=a.dataset.p;loadSt()})
+        outSt.querySelectorAll('.chip.folder').forEach(c=>c.onclick=()=>{prefix=c.dataset.p;loadSt()})
+      }
+      loadSt()  // raiz do bucket carrega sozinha
+    }
   }
 
   async function paneAuthz(){
